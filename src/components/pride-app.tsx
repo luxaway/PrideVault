@@ -1,1 +1,1 @@
-x
+file:///tmp/pride_restored.tsx
