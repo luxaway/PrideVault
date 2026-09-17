@@ -36,13 +36,12 @@ export function StatsStrip({
   onRetry?: () => void;
 }) {
   const days = daysLeft();
-  const primary = [
+  const items = [
     { label: t.statsPool, value: dash(pool, 0), hint: `${days} ${t.statsDaysShort}` },
-    {
-      label: t.statsOoxStake,
-      value: dash(ooxStaked, 0),
-      hint: `${formatNum(staked, 0)} / ${COLLECTION.supply}`,
-    },
+    { label: t.statsOoxStake, value: dash(ooxStaked, 0), hint: `${formatNum(staked, 0)} / ${COLLECTION.supply}` },
+    { label: t.statsListed, value: dash(listed, 0), hint: "OOX" },
+    { label: t.statsWallets, value: formatNum(inWallets, 0), hint: `${holderCount} ${t.statsHolders.toLowerCase()}` },
+    { label: t.statsDaily, value: dash(daily, 5), hint: t.statsDailyLive },
     { label: t.statsApr, value: apr > 0 ? `${formatNum(apr, 1)}%` : "—", hint: t.aprHint },
   ];
   return (
@@ -57,24 +56,14 @@ export function StatsStrip({
           ) : null}
         </p>
       ) : null}
-      <div className="rounded-xl bg-surface p-2 shadow-[var(--shadow-border)]">
-        <div className="grid grid-cols-3 gap-2">
-          {primary.map((item) => (
-            <div key={item.label} className="rounded-lg px-3 py-3 text-center sm:text-left">
-              <p className="text-[11px] text-muted">{item.label}</p>
-              <p className="mt-1 font-display text-xl tabular leading-none sm:text-2xl">{item.value}</p>
-              <p className="mt-1 truncate text-[11px] text-muted">{item.hint}</p>
-            </div>
-          ))}
-        </div>
-        <p className="border-t border-border/60 px-3 py-2 text-center text-[11px] text-muted">
-          {dash(listed, 0)} {t.statsListed.toLowerCase()}
-          {" · "}
-          {formatNum(inWallets, 0)} {t.statsWallets.toLowerCase()}
-          {holderCount > 0 ? ` (${holderCount} ${t.statsHolders.toLowerCase()})` : ""}
-          {" · "}
-          {dash(daily, 5)} {t.statsDaily}
-        </p>
+      <div className="grid grid-cols-2 gap-2 rounded-xl bg-surface p-2 shadow-[var(--shadow-border)] sm:grid-cols-3 lg:grid-cols-6">
+        {items.map((item) => (
+          <div key={item.label} className="rounded-lg px-3 py-3">
+            <p className="text-[11px] text-muted">{item.label}</p>
+            <p className="mt-1 font-display text-xl tabular leading-none">{item.value}</p>
+            <p className="mt-1 truncate text-[11px] text-muted">{item.hint}</p>
+          </div>
+        ))}
       </div>
     </section>
   );

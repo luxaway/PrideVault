@@ -50,6 +50,9 @@ export function Hero({
                 <a href="#buy">{t.buy}</a>
               </Button>
             )}
+            <Button size="lg" variant="outline" asChild>
+              <a href="#heart">{t.navHeart}</a>
+            </Button>
           </div>
           <p className="text-xs text-muted">
             {formatNum(listed, 0)} {t.statsListed.toLowerCase()} · {formatNum(ooxStaked, 0)}{" "}
