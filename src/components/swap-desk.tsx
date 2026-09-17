@@ -128,8 +128,12 @@ export function SwapDesk({
   const fromBal = toRoar ? otherBal : roarBal;
   const toBal = toRoar ? roarBal : otherBal;
   const maxFrom = toRoar && token.wrap ? Math.max(0, fromBal - swapEgldKeep()) : fromBal;
+  // Quote from typed amount even with no wallet / zero EGLD (pool can still price).
+  // Clamp to maxFrom only when actually spending / signing.
+  const quoteSpend = valid && Number.isFinite(amount) && amount > 0 ? amount : 0;
   const spend = valid ? (toRoar && token.wrap ? Math.min(amount, maxFrom) : amount) : 0;
   const spendOk = spend > 0 && Number.isFinite(spend);
+  const quoteOk = quoteSpend > 0;
 
   const locked = busy || dustBusy;
   const slippage = useVaultStore((s) => s.slippage);
@@ -169,16 +173,16 @@ export function SwapDesk({
   }, [balances, queryClient]);
 
   const q: PoolQuote | undefined = useMemo(() => {
-    if (!spendOk) return undefined;
+    if (!quoteOk) return undefined;
     if (usePool) {
       const row = pool.data;
       if (!row || row.tokenId !== "EGLD") return undefined;
-      return quoteFromPool(row, direction, spend, slippage) ?? undefined;
+      return quoteFromPool(row, direction, quoteSpend, slippage) ?? undefined;
     }
     const row = agg.data;
     if (!row || row.tokenId !== token.id) return undefined;
-    return quoteFromAggRate(row, direction, spend, slippage) ?? undefined;
-  }, [spendOk, usePool, pool.data, agg.data, token.id, direction, spend, slippage]);
+    return quoteFromAggRate(row, direction, quoteSpend, slippage) ?? undefined;
+  }, [quoteOk, usePool, pool.data, agg.data, token.id, direction, quoteSpend, slippage]);
   const quoteBusy = usePool ? pool.isFetching && !q : agg.isFetching && !q;
   const quoteErr = usePool ? pool.isError : agg.isError;
   const quoteErrMsg = usePool
