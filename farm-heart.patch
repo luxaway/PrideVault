@@ -1,0 +1,152 @@
+diff --git a/src/components/pride-app.tsx b/src/components/pride-app.tsx
+index e3f14ec..7e4851a 100644
+--- a/src/components/pride-app.tsx
++++ b/src/components/pride-app.tsx
+@@ -639,24 +639,44 @@ export function PrideApp() {
+     }
+     setStaking("restake");
+     const loading = toast.loading(t.restaking);
++    const address = session!.address;
++    const roarBefore = session?.roarWallet ?? 0;
+     try {
+-      const prepared = await prepareHeartRestakeTx({ data: { address: session!.address } });
+-      const signed = await signPreparedTxs(prepared.txs, {
++      // 1) Claim pending ROAR first (amount frozen at prepare is only a hint).
++      const prepared = await prepareHeartRestakeTx({ data: { address } });
++      const claimSigned = await signPreparedTx(prepared.txs[0], {
+         title: t.signRestake,
+-        steps: [t.claimStep, t.farmStepStake],
++        steps: [t.claimStep],
+       });
+       toast.loading(t.broadcasting, { id: loading });
+-      let lastHash = "";
+-      for (let i = 0; i < signed.length; i++) {
+-        const { txHash } = await broadcastTx({ data: { tx: signed[i] } });
+-        lastHash = txHash;
+-        if (i < signed.length - 1) {
+-          const mid = await waitForTx(txHash);
+-          throwIfTxUnconfirmed(mid, t.txPendingMid, t.restakeError);
+-        }
+-      }
++      const { txHash: claimHash } = await broadcastTx({ data: { tx: claimSigned } });
+       toast.loading(t.waitingTx, { id: loading });
+-      const done = await waitForTx(lastHash);
++      const claimDone = await waitForTx(claimHash);
++      throwIfTxFailed(claimDone, t.restakeError);
++
++      // 2) Re-read wallet ROAR, then stake the actual claim delta (not the pre-sign float).
++      const holdings = await getWalletHoldings({ data: { address } });
++      refreshHoldings(holdings.hearts, holdings.roar, holdings.egld, {
++        heartsStaked: holdings.heartsStaked,
++        pendingRoar: holdings.pendingRoar,
++        lastTick: holdings.lastTick,
++        history: holdings.history,
++      });
++      const claimed = Math.max(0, holdings.roar - roarBefore);
++      const stakeAmount = claimed > 0 ? claimed : prepared.amount;
++      if (stakeAmount <= 0) throw new Error("Nothing to restake");
++
++      const stakePrepared = await prepareFarmTx({
++        data: { address, kind: "stake", amount: stakeAmount },
++      });
++      const stakeSigned = await signPreparedTx(stakePrepared, {
++        title: t.signRestake,
++        steps: [t.farmStepStake],
++      });
++      toast.loading(t.broadcasting, { id: loading });
++      const { txHash: stakeHash } = await broadcastTx({ data: { tx: stakeSigned } });
++      toast.loading(t.waitingTx, { id: loading });
++      const done = await waitForTx(stakeHash);
+       throwIfTxFailed(done, t.restakeError);
+       if (done.status === "success") await refreshLive();
+       else void refreshLive();
+@@ -664,7 +684,7 @@ export function PrideApp() {
+       await toastTxResult(
+         done,
+         loading,
+-        `${t.restakeSuccess} · ${formatRoarClaim(prepared.amount)} ROAR`,
++        `${t.restakeSuccess} · ${formatRoarClaim(stakePrepared.amount ?? stakeAmount)} ROAR`,
+         t,
+       );
+     } catch (err) {
+diff --git a/src/lib/mx.functions.ts b/src/lib/mx.functions.ts
+index 01df90f..8abfc5d 100644
+--- a/src/lib/mx.functions.ts
++++ b/src/lib/mx.functions.ts
+@@ -971,10 +971,17 @@ async function readOoxPosition(address) {
+ 		}
+ 	}
+ 	staked = Math.max(0, staked);
+-	const onChain = decodeOoxUserStake(b64Buf(stakeView[0]));
+-	if (onChain.staked > 0 || onChain.pendingRoar > 0) staked = onChain.staked;
+-	const pendingRoar = onChain.pendingRoar;
+-	lastClaimAt = toMs(onChain.lastTs) || toMs(lastClaimAt) || toMs(firstStakeAt);
++	let pendingRoar = 0;
++	const hasVmStake = Array.isArray(stakeView) && stakeView.length > 0 && stakeView[0] != null;
++	if (hasVmStake) {
++		const onChain = decodeOoxUserStake(b64Buf(stakeView[0]));
++		// Always trust VM view when present (including full unstake → 0), else transfer-history ghost remains.
++		staked = onChain.staked;
++		pendingRoar = onChain.pendingRoar;
++		lastClaimAt = toMs(onChain.lastTs) || toMs(lastClaimAt) || toMs(firstStakeAt);
++	} else {
++		lastClaimAt = toMs(lastClaimAt) || toMs(firstStakeAt);
++	}
+ 	history.sort((a, b) => b.at - a.at);
+ 	return {
+ 		staked,
+@@ -2834,7 +2841,7 @@ export const prepareClaimTx = createServerFn({ method: "POST" }).validator((data
+ }).handler(async ({ data }) => {
+ 	const { address } = data;
+ 	const [position, account] = await Promise.all([readOoxPosition(address), mx(`/accounts/${address}?withGuardianInfo=true`)]);
+-	if (position.staked <= 0) throw new Error("No Hearts staked on OOX");
++	if (position.pendingRoar <= 0) throw new Error("Nothing to claim");
+ 	return {
+ 		...withAccountGuard({
+ 			sender: address,
+@@ -2856,39 +2863,28 @@ export const prepareHeartRestakeTx = createServerFn({ method: "POST" }).validato
+ 	return { address };
+ }).handler(async ({ data }) => {
+ 	const { address } = data;
+-	const [position, account, farmPos] = await Promise.all([
++	const [position, account] = await Promise.all([
+ 		readOoxPosition(address),
+-		mx(`/accounts/${address}?withGuardianInfo=true`),
+-		readFarmPosition(address)
++		mx(`/accounts/${address}?withGuardianInfo=true`)
+ 	]);
+-	if (position.staked <= 0 && position.pendingRoar <= 0) throw new Error("No Hearts staked on OOX");
++	if (position.pendingRoar <= 0) throw new Error("Nothing to restake");
+ 	const amount = position.pendingRoar;
+ 	let raw = toAtomic(amount, TOKEN.decimals);
+ 	if (raw > 1n) raw -= 1n;
+ 	if (raw <= 0n) throw new Error("Nothing to restake");
+-	const nonce = account?.nonce ?? 0;
+ 	const claimTx = withAccountGuard({
+ 		sender: address,
+ 		receiver: ADDRESSES.ooxStaking,
+-		nonce,
++		nonce: account?.nonce ?? 0,
+ 		value: "0",
+ 		data: encodeClaimHearts(),
+ 		gasLimit: CHAIN.claimGasLimit,
+ 		gasPrice: CHAIN.gasPrice,
+ 		chainID: CHAIN.id
+ 	}, account);
+-	const live = farmPos.slots.filter((s) => s.kind === "staked").sort((a, b) => BigInt(b.amountRaw) > BigInt(a.amountRaw) ? 1 : BigInt(b.amountRaw) < BigInt(a.amountRaw) ? -1 : 0)[0];
++	// Claim only — client re-reads wallet ROAR after claim success, then prepareFarmTx stake.
+ 	return {
+-		txs: [claimTx, withAccountGuard({
+-			sender: address,
+-			receiver: live ? address : ADDRESSES.roarFarm,
+-			nonce: nonce + 1,
+-			value: "0",
+-			data: live ? encodeStakeFarmMerge(raw, live.nonce, live.amountRaw) : encodeStakeFarm(raw),
+-			gasLimit: CHAIN.farmStakeGasLimit,
+-			gasPrice: CHAIN.gasPrice,
+-			chainID: CHAIN.id
+-		}, account)],
++		txs: [claimTx],
+ 		amount: fromAtomic(raw, TOKEN.decimals)
+ 	};
+ });
