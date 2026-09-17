@@ -1,0 +1,293 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+@theme {
+  --font-sans: "Outfit", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "Cinzel", "Times New Roman", serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+
+  --color-bg: #05070e;
+  --color-background: #05070e;
+  --color-surface: #0c1018;
+  --color-surface-2: #141a26;
+  --color-card: #0c1018;
+  --color-fg: #eef2f8;
+  --color-foreground: #eef2f8;
+  --color-muted: #8b95ab;
+  --color-muted-foreground: #8b95ab;
+  --color-ember: #e11d2a;
+  --color-primary: #e11d2a;
+  --color-primary-foreground: #fff8f8;
+  --color-volt: #3d8bff;
+  --color-border: rgb(238 242 248 / 0.1);
+  --color-ring: #3d8bff;
+  --color-popover: #0c1018;
+  --color-popover-foreground: #eef2f8;
+  --color-destructive: #c45c4a;
+  --color-accent: #141a26;
+  --color-accent-foreground: #eef2f8;
+  --color-secondary: #141a26;
+  --color-secondary-foreground: #eef2f8;
+  --color-input: rgb(238 242 248 / 0.12);
+
+  --color-chat-in: #243044;
+  --color-chat-in-fg: #f5f7fb;
+  --color-chat-meta: #c3cadb;
+
+  --radius-xs: 4px;
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --radius-xl: 24px;
+  --radius: 12px;
+
+  --shadow-border: 0 0 0 1px rgb(238 242 248 / 0.08);
+  --shadow-border-hover: 0 0 0 1px rgb(238 242 248 / 0.16);
+
+  --motion-quick: 150ms;
+  --motion-fast: 250ms;
+  --ease-smooth-out: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@layer base {
+  html {
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    background: var(--color-bg);
+    color: var(--color-fg);
+    scroll-behavior: smooth;
+  }
+
+  body {
+    background: var(--color-bg);
+    color: var(--color-fg);
+    font-family: var(--font-sans);
+  }
+
+  h1, h2, h3 {
+    text-wrap: balance;
+    font-family: var(--font-display);
+  }
+
+  p {
+    text-wrap: pretty;
+  }
+
+  [role="dialog"][aria-label] p {
+    overflow-wrap: anywhere;
+  }
+
+  button:not(:disabled),
+  [role="button"]:not(:disabled) {
+    cursor: pointer;
+  }
+
+  * {
+    border-color: var(--color-border);
+  }
+
+  img {
+    outline: 1px solid rgb(238 242 248 / 0.1);
+    outline-offset: -1px;
+  }
+
+  img.lion-sprite-sheet {
+    outline: none;
+  }
+}
+
+@layer utilities {
+  .font-display {
+    font-family: var(--font-display);
+  }
+
+  .tabular {
+    font-variant-numeric: tabular-nums;
+  }
+
+  .dual-wash {
+    background: linear-gradient(
+      90deg,
+      color-mix(in oklab, var(--color-volt) 14%, transparent) 0%,
+      transparent 46%,
+      transparent 54%,
+      color-mix(in oklab, var(--color-ember) 14%, transparent) 100%
+    );
+  }
+
+  .dual-bar {
+    background: linear-gradient(
+      90deg,
+      var(--color-volt) 0%,
+      var(--color-volt) 50%,
+      var(--color-ember) 50%,
+      var(--color-ember) 100%
+    );
+  }
+}
+
+[data-chat-theme="dark"] {
+  color-scheme: dark;
+}
+
+[data-chat-theme="light"] {
+  color-scheme: light;
+  --color-bg: #f3f5fa;
+  --color-background: #f3f5fa;
+  --color-surface: #ffffff;
+  --color-surface-2: #e7ebf4;
+  --color-card: #ffffff;
+  --color-fg: #121722;
+  --color-foreground: #121722;
+  --color-muted: #5a6478;
+  --color-muted-foreground: #5a6478;
+  --color-chat-in: #dce3f0;
+  --color-chat-in-fg: #121722;
+  --color-chat-meta: #3e4758;
+  --color-border: rgb(18 23 34 / 0.12);
+  --color-input: rgb(18 23 34 / 0.1);
+  --color-accent: #e7ebf4;
+  --color-accent-foreground: #121722;
+  --color-secondary: #e7ebf4;
+  --color-secondary-foreground: #121722;
+  --color-popover: #ffffff;
+  --color-popover-foreground: #121722;
+  --shadow-border: 0 0 0 1px rgb(18 23 34 / 0.08);
+  --shadow-border-hover: 0 0 0 1px rgb(18 23 34 / 0.16);
+}
+
+[data-chat-theme="light"] img {
+  outline-color: rgb(18 23 34 / 0.12);
+}
+
+@keyframes rise {
+  0% { opacity: 0; filter: blur(4px); transform: translateY(12px); }
+  100% { opacity: 1; filter: blur(0); transform: translateY(0); }
+}
+
+@keyframes live-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
+@keyframes live-ping {
+  0% { opacity: 0.7; transform: scale(1); }
+  80%, 100% { opacity: 0; transform: scale(2.2); }
+}
+
+.animate-live-pulse {
+  animation: live-pulse 1.8s ease-in-out infinite;
+}
+
+.animate-live-ping {
+  animation: live-ping 1s cubic-bezier(0, 0, 0.2, 1) infinite;
+}
+
+.stagger-in > * {
+  animation: rise 0.4s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.stagger-in > *:nth-child(1) { animation-delay: 0ms; }
+.stagger-in > *:nth-child(2) { animation-delay: 70ms; }
+.stagger-in > *:nth-child(3) { animation-delay: 140ms; }
+.stagger-in > *:nth-child(4) { animation-delay: 210ms; }
+.stagger-in > *:nth-child(5) { animation-delay: 280ms; }
+.stagger-in > *:nth-child(6) { animation-delay: 350ms; }
+
+.ecompass-frame,
+.candle-chart {
+  display: block;
+  height: 22rem;
+  background: var(--color-bg);
+}
+
+@media (min-width: 768px) {
+  .ecompass-frame,
+  .candle-chart {
+    height: 32rem;
+  }
+}
+
+.lion-sprite {
+  display: block;
+  overflow: hidden;
+  line-height: 0;
+}
+
+.lion-sprite-sheet {
+  display: block;
+  height: 100%;
+  width: calc(100% * 4);
+  max-width: none;
+  object-fit: fill;
+  animation: lion-run-frames 0.48s steps(4) infinite;
+}
+
+@keyframes lion-run-frames {
+  to { transform: translateX(-100%); }
+}
+
+.lion-track {
+  width: 100%;
+}
+
+.lion-track-ground {
+  position: absolute;
+  left: 0.75rem;
+  right: 1.25rem;
+  bottom: 0.7rem;
+  height: 2px;
+  border-radius: 999px;
+  background-image: repeating-linear-gradient(
+    90deg,
+    color-mix(in oklab, var(--color-volt) 70%, transparent) 0 5px,
+    transparent 5px 10px,
+    color-mix(in oklab, var(--color-ember) 70%, transparent) 10px 15px,
+    transparent 15px 20px
+  );
+  animation: lion-ground 0.36s linear infinite;
+}
+
+.lion-track-finish {
+  position: absolute;
+  right: 0.55rem;
+  bottom: 0.45rem;
+  width: 3px;
+  height: 1.75rem;
+  border-radius: 999px;
+  background: linear-gradient(180deg, var(--color-volt), var(--color-ember));
+  opacity: 0.45;
+}
+
+.lion-track.is-done .lion-track-ground {
+  animation: none;
+}
+
+.lion-track.is-done .lion-track-finish {
+  opacity: 1;
+}
+
+.lion-track.is-done .lion-sprite-sheet {
+  animation-play-state: paused;
+}
+
+.lion-track-runner {
+  position: absolute;
+  left: 0;
+  bottom: 0.15rem;
+  display: flex;
+  will-change: transform;
+}
+
+@keyframes lion-ground {
+  to { background-position: -20px 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .lion-sprite-sheet,
+  .lion-track-ground,
+  .animate-live-pulse,
+  .animate-live-ping,
+  .stagger-in > * {
+    animation: none !important;
+  }
+}
