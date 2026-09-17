@@ -266,7 +266,10 @@ export function SwapDesk({
             value={raw}
             onChange={setRaw}
             balance={fromBal}
-            onMax={() => setRaw(fromBal > 0 ? trimAmt(fromBal, Math.max(fromDigits, 6)) : "0")}
+            onMax={() => {
+              const max = toRoar && token.wrap ? maxFrom : fromBal;
+              setRaw(max > 0 ? trimAmt(max, Math.max(fromDigits, 6)) : "0");
+            }}
             maxLabel={t.swapMax}
             locked={!toRoar}
             lockedLabel={t.swapLocked}

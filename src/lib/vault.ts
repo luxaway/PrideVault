@@ -29,11 +29,9 @@ export function dailyIfFullyStaked(poolRoar: number, now = Date.now()) {
 
 /** APR of one Heart at the 1 EGLD mint/floor, from the live daily emission. */
 export function aprPct(daily: number, roarUsd: number, egldUsd: number) {
-  if (daily <= 0) return 0;
-  const roar = roarUsd > 0 ? roarUsd : 0.015;
-  const egld = egldUsd > 0 ? egldUsd : 4.15;
-  const yearlyUsd = daily * 365 * roar;
-  const nftUsd = COLLECTION.mintPriceEgld * egld;
+  if (daily <= 0 || roarUsd <= 0 || egldUsd <= 0) return 0;
+  const yearlyUsd = daily * 365 * roarUsd;
+  const nftUsd = COLLECTION.mintPriceEgld * egldUsd;
   if (!nftUsd) return 0;
   return (yearlyUsd / nftUsd) * 100;
 }

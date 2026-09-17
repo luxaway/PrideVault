@@ -20,6 +20,8 @@ export function StatsStrip({
   pool,
   daily,
   apr,
+  error = false,
+  onRetry,
 }: {
   t: Copy;
   staked: number;
@@ -30,6 +32,8 @@ export function StatsStrip({
   pool: number;
   daily: number;
   apr: number;
+  error?: boolean;
+  onRetry?: () => void;
 }) {
   const days = daysLeft();
   const items = [
@@ -42,6 +46,16 @@ export function StatsStrip({
   ];
   return (
     <section className="mx-auto max-w-6xl px-4">
+      {error ? (
+        <p className="mb-2 text-center text-xs text-ember">
+          {t.statsError}{" "}
+          {onRetry ? (
+            <button type="button" className="underline" onClick={onRetry}>
+              Retry
+            </button>
+          ) : null}
+        </p>
+      ) : null}
       <div className="grid grid-cols-2 gap-2 rounded-xl bg-surface p-2 shadow-[var(--shadow-border)] sm:grid-cols-3 lg:grid-cols-6">
         {items.map((item) => (
           <div key={item.label} className="rounded-lg px-3 py-3">

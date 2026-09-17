@@ -77,6 +77,7 @@ let signHoldUntil = 0;
 let deferredLogout = false;
 let connectLock: Promise<string> | null = null;
 let connectUri = "";
+let pairAbort: ((reason?: Error) => void) | null = null;
 
 const signListeners = new Set<(s: SignUi) => void>();
 const readyListeners = new Set<(s: WalletReady) => void>();
@@ -360,8 +361,10 @@ function endSign() {
     }
     const keys = clientOf(provider)?.session?.keys ?? [];
     if (keys.length) return;
-    const keepKind = kind ?? ready.kind;
-    if (keepKind) persistKind(keepKind, ready.address || readPersistedAddress());
+    // Deferred session_delete confirmed: drop kind and notify the app store.
+    persistKind(null, null);
+    persistTopic(null);
+    logoutHandler?.();
   }, SIGN_HOLD_MS);
 }
 
@@ -563,16 +566,24 @@ async function pairXportal(onUri: (uri: string) => void): Promise<string> {
 
   // Do NOT call provider.login() — it sets isInitializing and the SDK's
   // session_delete handler then disconnect()s the SignClient (killing Connect).
-  const session = await approval();
+  const session = await new Promise<WcSession>((resolve, reject) => {
+    pairAbort = (reason) => reject(reason ?? new Error("Pairing cancelled"));
+    approval().then(resolve, reject);
+  }).finally(() => {
+    pairAbort = null;
+  });
   restoreClient(provider, client);
   if (!session) throw new Error("xPortal did not return an address");
   provider.session = session;
   const address = addressFromSession(session) || provider.getAccount()?.address;
   if (!address) throw new Error("xPortal did not return an address");
   provider.setAccount({ address, signature: provider.getAccount()?.signature || "" });
-  persistKind("wc", address);
+  // Keep topic for deep-links; defer kind/address persist until Zustand sync
+  // (commitWalletSession) so Cancel / early session_delete cannot orphan a WC session.
   persistTopic(session.topic);
   deferredLogout = false;
+  setReady({ kind: "wc", address });
+  kind = "wc";
   return address;
 }
 
@@ -595,6 +606,29 @@ export async function connectWalletConnect(onUri: (uri: string) => void): Promis
     }
   })();
   return connectLock;
+}
+
+/** Abort an in-flight WC pairing (Connect dialog Cancel). No-op if already paired. */
+export function abortWalletConnect() {
+  const abort = pairAbort;
+  if (!abort && !connectLock) return;
+  pairAbort = null;
+  connectLock = null;
+  connectUri = "";
+  lastPairingUri = "";
+  if (abort) abort(new Error("Pairing cancelled"));
+  const provider = wcProvider || g.__pvWc || null;
+  // Only drop an unfinished pairing session — never a committed WC session.
+  if (abort && provider && !provider.isConnected?.()) {
+    void dropSessionKeepClient(provider).catch(() => undefined);
+  }
+}
+
+/** Persist WC kind/address only after the app store has the live session. */
+export function commitWalletSession(address: string, next: "wc" | "webview" = "wc") {
+  persistKind(next, address);
+  persistTopic(sessionTopicOf(wcProvider || g.__pvWc || null));
+  deferredLogout = false;
 }
 
 export async function connectWebview(): Promise<string> {
@@ -854,6 +888,12 @@ export async function signPreparedTxs(
   beginSign();
   try {
     const mode = await ensureReady();
+    const walletAddr = ready.address || readPersistedAddress();
+    for (const tx of unsigneds) {
+      if (walletAddr && tx.sender && tx.sender !== walletAddr) {
+        throw new Error("Wallet address mismatch — reconnect xPortal");
+      }
+    }
     setSignUi({
       title: ui?.title ?? "xPortal",
       steps: ui?.steps ?? unsigneds.map((tx) => tx.data.split("@")[0] || "tx"),
