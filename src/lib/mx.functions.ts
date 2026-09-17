@@ -2859,39 +2859,28 @@ export const prepareHeartRestakeTx = createServerFn({ method: "POST" }).validato
 	return { address };
 }).handler(async ({ data }) => {
 	const { address } = data;
-	const [position, account, farmPos] = await Promise.all([
+	const [position, account] = await Promise.all([
 		readOoxPosition(address),
-		mx(`/accounts/${address}?withGuardianInfo=true`),
-		readFarmPosition(address)
+		mx(`/accounts/${address}?withGuardianInfo=true`)
 	]);
-	if (position.staked <= 0 && position.pendingRoar <= 0) throw new Error("No Hearts staked on OOX");
+	if (position.pendingRoar <= 0) throw new Error("Nothing to restake");
 	const amount = position.pendingRoar;
 	let raw = toAtomic(amount, TOKEN.decimals);
 	if (raw > 1n) raw -= 1n;
 	if (raw <= 0n) throw new Error("Nothing to restake");
-	const nonce = account?.nonce ?? 0;
 	const claimTx = withAccountGuard({
 		sender: address,
 		receiver: ADDRESSES.ooxStaking,
-		nonce,
+		nonce: account?.nonce ?? 0,
 		value: "0",
 		data: encodeClaimHearts(),
 		gasLimit: CHAIN.claimGasLimit,
 		gasPrice: CHAIN.gasPrice,
 		chainID: CHAIN.id
 	}, account);
-	const live = farmPos.slots.filter((s) => s.kind === "staked").sort((a, b) => BigInt(b.amountRaw) > BigInt(a.amountRaw) ? 1 : BigInt(b.amountRaw) < BigInt(a.amountRaw) ? -1 : 0)[0];
+	// Claim only — client re-reads wallet ROAR after claim success, then prepareFarmTx stake.
 	return {
-		txs: [claimTx, withAccountGuard({
-			sender: address,
-			receiver: live ? address : ADDRESSES.roarFarm,
-			nonce: nonce + 1,
-			value: "0",
-			data: live ? encodeStakeFarmMerge(raw, live.nonce, live.amountRaw) : encodeStakeFarm(raw),
-			gasLimit: CHAIN.farmStakeGasLimit,
-			gasPrice: CHAIN.gasPrice,
-			chainID: CHAIN.id
-		}, account)],
+		txs: [claimTx],
 		amount: fromAtomic(raw, TOKEN.decimals)
 	};
 });

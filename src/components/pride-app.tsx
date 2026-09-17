@@ -656,24 +656,44 @@ export function PrideApp() {
     }
     setStaking("restake");
     const loading = toast.loading(t.restaking);
+    const address = session!.address;
+    const roarBefore = session?.roarWallet ?? 0;
     try {
-      const prepared = await prepareHeartRestakeTx({ data: { address: session!.address } });
-      const signed = await signPreparedTxs(prepared.txs, {
+      // 1) Claim pending ROAR first (amount frozen at prepare is only a hint).
+      const prepared = await prepareHeartRestakeTx({ data: { address } });
+      const claimSigned = await signPreparedTx(prepared.txs[0], {
         title: t.signRestake,
-        steps: [t.claimStep, t.farmStepStake],
+        steps: [t.claimStep],
       });
       toast.loading(t.broadcasting, { id: loading });
-      let lastHash = "";
-      for (let i = 0; i < signed.length; i++) {
-        const { txHash } = await broadcastTx({ data: { tx: signed[i] } });
-        lastHash = txHash;
-        if (i < signed.length - 1) {
-          const mid = await waitForTx(txHash);
-          throwIfTxUnconfirmed(mid, t.txPendingMid, t.restakeError);
-        }
-      }
+      const { txHash: claimHash } = await broadcastTx({ data: { tx: claimSigned } });
       toast.loading(t.waitingTx, { id: loading });
-      const done = await waitForTx(lastHash);
+      const claimDone = await waitForTx(claimHash);
+      throwIfTxFailed(claimDone, t.restakeError);
+
+      // 2) Re-read wallet ROAR, then stake the actual claim delta (not the pre-sign float).
+      const holdings = await getWalletHoldings({ data: { address } });
+      refreshHoldings(holdings.hearts, holdings.roar, holdings.egld, {
+        heartsStaked: holdings.heartsStaked,
+        pendingRoar: holdings.pendingRoar,
+        lastTick: holdings.lastTick,
+        history: holdings.history,
+      });
+      const claimed = Math.max(0, holdings.roar - roarBefore);
+      const stakeAmount = claimed > 0 ? claimed : prepared.amount;
+      if (stakeAmount <= 0) throw new Error("Nothing to restake");
+
+      const stakePrepared = await prepareFarmTx({
+        data: { address, kind: "stake", amount: stakeAmount },
+      });
+      const stakeSigned = await signPreparedTx(stakePrepared, {
+        title: t.signRestake,
+        steps: [t.farmStepStake],
+      });
+      toast.loading(t.broadcasting, { id: loading });
+      const { txHash: stakeHash } = await broadcastTx({ data: { tx: stakeSigned } });
+      toast.loading(t.waitingTx, { id: loading });
+      const done = await waitForTx(stakeHash);
       throwIfTxFailed(done, t.restakeError);
       if (done.status === "success") await refreshLive();
       else void refreshLive();
@@ -681,7 +701,7 @@ export function PrideApp() {
       await toastTxResult(
         done,
         loading,
-        `${t.restakeSuccess} · ${formatRoarClaim(prepared.amount)} ROAR`,
+        `${t.restakeSuccess} · ${formatRoarClaim(stakePrepared.amount ?? stakeAmount)} ROAR`,
         t,
       );
     } catch (err) {
