@@ -256,7 +256,6 @@ export function SwapDesk({
       <div>
         <div className="flex flex-wrap items-center gap-2">
           <h2 className="font-display text-2xl font-medium md:text-3xl">{t.swapTitle}</h2>
-          <Badge variant="mute">{usePool ? t.swapVenueAmm : t.swapVenueAgg}</Badge>
         </div>
         <p className="mt-2 max-w-2xl text-sm leading-relaxed text-muted">{t.swapLead}</p>
       </div>
@@ -306,8 +305,16 @@ export function SwapDesk({
             onPick={!toRoar ? () => setPickOpen(true) : undefined}
           />
 
-          <dl className="mt-4 grid gap-2 rounded-lg bg-surface-2 p-4 text-sm shadow-[var(--shadow-border)]">
-            <Row label={t.swapRate} value={rateLabel} />
+          {q && valid ? (
+            <p className="mt-3 text-sm font-medium text-fg">
+              <span className="text-muted">{t.swapRate}: </span>
+              {rateLabel}
+              <span className="mx-2 text-muted">·</span>
+              <Badge variant="mute">{routeLabel}</Badge>
+            </p>
+          ) : null}
+
+          <dl className="mt-3 grid grid-cols-2 gap-x-4 gap-y-2 rounded-lg bg-surface-2 p-3 text-xs shadow-[var(--shadow-border)] sm:text-sm">
             <Row
               label={t.swapMinOut}
               value={
@@ -322,8 +329,7 @@ export function SwapDesk({
               label={t.impact}
               value={q ? `${formatNum(Math.abs(q.priceImpact), 2)}%` : "—"}
             />
-            <Row label={t.jexSource} value={routeLabel} />
-            <div className="flex items-center justify-between gap-3 pt-1">
+            <div className="col-span-2 flex items-center justify-between gap-3 pt-1">
               <span className="text-muted">{t.swapSlippage}</span>
               <SlippageToggle t={t} />
             </div>
@@ -349,6 +355,19 @@ export function SwapDesk({
             {busy ? <LionRun size="sm" label={t.txRun} /> : null}
             {cta}
           </Button>
+          {q && valid ? (
+            <p className="mt-2 text-center text-xs text-muted">
+              {t.swapCtaHint
+                .replace(
+                  "{from}",
+                  `${trimAmt(quoteSpend || amount, fromDigits)} ${toRoar ? token.ticker : "ROAR"}`,
+                )
+                .replace(
+                  "{to}",
+                  `${trimAmt(q.amountOut, toDigits)} ${toRoar ? "ROAR" : token.ticker}`,
+                )}
+            </p>
+          ) : null}
           {!enough && valid && canSign ? (
             <p className="mt-3 text-sm text-ember">{t.swapNotEnough}</p>
           ) : null}
