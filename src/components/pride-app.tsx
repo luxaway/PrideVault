@@ -206,6 +206,7 @@ export function PrideApp() {
   const [burnifying, setBurnifying] = useState<BurnifyAction | null>(null);
   const [sending, setSending] = useState(false);
   const [signerReady, setSignerReady] = useState(false);
+  const [readyAddress, setReadyAddress] = useState<string | null>(null);
   const [walletChecked, setWalletChecked] = useState(false);
   const [section, setSection] = useState<AppSection>("heart");
   const [swapFocus, setSwapFocus] = useState<string | null>(null);
@@ -230,9 +231,11 @@ export function PrideApp() {
   useEffect(() => {
     onWalletLogout(() => {
       setSignerReady(false);
+      setReadyAddress(null);
     });
     const unsub = subscribeWalletReady((state) => {
       setSignerReady(state.kind === "wc" || state.kind === "webview");
+      setReadyAddress(state.address);
     });
     let cancelled = false;
     void (async () => {
@@ -391,7 +394,11 @@ export function PrideApp() {
   const roarUsd = market.data?.roarPriceUsd || snapshot.data?.roarPriceUsd || fb?.roarPriceUsd || 0;
   const egldUsd = market.data?.egldPriceUsd || snapshot.data?.egldPriceUsd || fb?.egldPriceUsd || 0;
   const apr = aprPct(daily, roarUsd, egldUsd);
-  const canSign = session?.mode === "xportal" && signerReady;
+  const canSign =
+    session?.mode === "xportal" &&
+    signerReady &&
+    Boolean(readyAddress) &&
+    readyAddress === session.address;
   const sessionLost = session?.mode === "xportal" && walletChecked && !signerReady;
   const inFlight = Boolean(
     buyingId !== null ||

@@ -18,7 +18,7 @@ import { getWalletHoldings } from "@/lib/mx.functions";
 import { useVaultStore } from "@/lib/store";
 import { isErdAddress } from "@/lib/utils";
 import {
-  abortWalletConnect,
+  cancelPendingPairing,
   commitWalletSession,
   connectWalletConnect,
   connectWebview,
@@ -48,11 +48,12 @@ export function ConnectDialog({
   const [error, setError] = useState("");
   const gen = useRef(0);
   const waitingRef = useRef(false);
+  const pairedOk = useRef(false);
 
   useEffect(() => {
     if (!open) {
       gen.current += 1;
-      if (waitingRef.current) abortWalletConnect();
+      if (waitingRef.current) cancelPendingPairing();
       waitingRef.current = false;
       setQrSvg("");
       setWcUri("");
@@ -61,8 +62,18 @@ export function ConnectDialog({
       setError("");
       return;
     }
+    pairedOk.current = false;
     prepareWalletConnect();
   }, [open]);
+
+  function handleOpenChange(next: boolean) {
+    if (!next) {
+      if (!pairedOk.current && waitingRef.current) cancelPendingPairing();
+      waitingRef.current = false;
+      pairedOk.current = false;
+    }
+    onOpenChange(next);
+  }
 
   async function loadHoldings(address: string, mode: "xportal" | "live") {
     const holdings = await getWalletHoldings({ data: { address } });
@@ -84,6 +95,7 @@ export function ConnectDialog({
       });
     }
     waitingRef.current = false;
+    pairedOk.current = true;
     setWaiting(false);
     onOpenChange(false);
   }
@@ -150,7 +162,7 @@ export function ConnectDialog({
   }
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent>
         <DialogHeader>
           <DialogTitle>{t.connect}</DialogTitle>
@@ -184,8 +196,7 @@ export function ConnectDialog({
               variant="ghost"
               className="w-full"
               onClick={() => {
-                abortWalletConnect();
-                onOpenChange(false);
+                handleOpenChange(false);
               }}
             >
               {t.cancel}

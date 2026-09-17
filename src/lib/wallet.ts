@@ -78,6 +78,7 @@ let deferredLogout = false;
 let connectLock: Promise<string> | null = null;
 let connectUri = "";
 let pairAbort: ((reason?: Error) => void) | null = null;
+let pairEpoch = 0;
 
 const signListeners = new Set<(s: SignUi) => void>();
 const readyListeners = new Set<(s: WalletReady) => void>();
@@ -524,7 +525,40 @@ export async function restoreWallet(): Promise<string | null> {
   return null;
 }
 
+export function cancelPendingPairing() {
+  pairEpoch += 1;
+  const abort = pairAbort;
+  pairAbort = null;
+  connectLock = null;
+  connectUri = "";
+  lastPairingUri = "";
+  if (abort) abort(new Error("Pairing cancelled"));
+  const provider = wcProvider || g.__pvWc || null;
+  const client = clientOf(provider);
+  const topic = provider?.session?.topic || readPersistedTopic();
+  // Drop an unfinished pairing session; epoch check covers approval-already-resolved.
+  if (provider && topic && !ready.kind) {
+    void provider
+      .logout({ topic })
+      .catch(() => undefined)
+      .finally(() => {
+        restoreClient(provider, client);
+        provider.session = undefined;
+      });
+  } else if (provider && !ready.kind) {
+    provider.session = undefined;
+    restoreClient(provider, client);
+  } else if (abort && provider && !provider.isConnected?.()) {
+    void dropSessionKeepClient(provider).catch(() => undefined);
+  }
+  if (!ready.kind) {
+    persistKind(null, null);
+    persistTopic(null);
+  }
+}
+
 async function pairXportal(onUri: (uri: string) => void): Promise<string> {
+  const epoch = pairEpoch;
   const provider = await getWc();
   restoreClient(provider, clientOf(provider));
   if (!provider.walletConnector) {
@@ -573,6 +607,16 @@ async function pairXportal(onUri: (uri: string) => void): Promise<string> {
     pairAbort = null;
   });
   restoreClient(provider, client);
+  if (epoch !== pairEpoch) {
+    try {
+      if (session?.topic) await provider.logout({ topic: session.topic });
+    } catch {
+      /* pairing aborted */
+    }
+    restoreClient(provider, client);
+    provider.session = undefined;
+    throw new Error("Connection cancelled");
+  }
   if (!session) throw new Error("xPortal did not return an address");
   provider.session = session;
   const address = addressFromSession(session) || provider.getAccount()?.address;
@@ -610,18 +654,8 @@ export async function connectWalletConnect(onUri: (uri: string) => void): Promis
 
 /** Abort an in-flight WC pairing (Connect dialog Cancel). No-op if already paired. */
 export function abortWalletConnect() {
-  const abort = pairAbort;
-  if (!abort && !connectLock) return;
-  pairAbort = null;
-  connectLock = null;
-  connectUri = "";
-  lastPairingUri = "";
-  if (abort) abort(new Error("Pairing cancelled"));
-  const provider = wcProvider || g.__pvWc || null;
-  // Only drop an unfinished pairing session — never a committed WC session.
-  if (abort && provider && !provider.isConnected?.()) {
-    void dropSessionKeepClient(provider).catch(() => undefined);
-  }
+  if (!pairAbort && !connectLock) return;
+  cancelPendingPairing();
 }
 
 /** Persist WC kind/address only after the app store has the live session. */
