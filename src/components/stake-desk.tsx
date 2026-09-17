@@ -4,7 +4,7 @@ import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { LionRun } from "@/components/lion-run";
-import { explorerTxUrl, LINKS } from "@/lib/config";
+import { COLLECTION, explorerTxUrl, LINKS } from "@/lib/config";
 import type { Copy } from "@/lib/i18n";
 import type { HistoryKind, Session } from "@/lib/store";
 import { useVaultStore } from "@/lib/store";
@@ -51,11 +51,11 @@ export function StakeDesk({
     return (
       <section id="heart" className="scroll-mt-32 mx-auto max-w-xl px-4 py-6">
         <DeskShell t={t}>
-          <p className="mt-3 text-sm leading-relaxed text-muted">{t.deskLead}</p>
           <Button className="mt-6 h-12 w-full" size="lg" onClick={onConnect}>
             {t.connectXportal}
           </Button>
-          <p className="mt-3 text-center text-xs text-muted">{t.needSign}</p>
+          <p className="mt-3 text-center text-sm leading-relaxed text-muted">{t.deskLead}</p>
+          <p className="mt-2 text-center text-xs text-muted">{t.needSign}</p>
         </DeskShell>
       </section>
     );
@@ -128,7 +128,7 @@ export function StakeDesk({
     <section id="heart" className="scroll-mt-32 mx-auto max-w-xl px-4 py-6">
       <DeskShell t={t}>
         <p className="mt-2 text-sm leading-relaxed text-muted">{t.deskLead}</p>
-        <p className="mt-2 text-xs text-muted">
+        <p className="mt-1 text-xs text-muted">
           {session.mode === "demo" ? t.demoNote : session.mode === "xportal" ? t.xportalNote : t.liveNote}
         </p>
 
@@ -274,7 +274,9 @@ function DeskShell({ t, children }: { t: Copy; children: ReactNode }) {
             <h2 className="font-display text-xl font-medium">{t.deskTitle}</h2>
             <Badge variant="volt">{t.deskFarm}</Badge>
           </div>
-          <p className="mt-1 text-xs uppercase tracking-widest text-muted">HORVSN-a3fd09-01</p>
+          <p className="mt-1 truncate text-[11px] text-muted">
+            {COLLECTION.sftId} · farm 0x41
+          </p>
         </div>
       </div>
       {children}
