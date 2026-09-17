@@ -972,7 +972,10 @@ async function readOoxPosition(address) {
 	}
 	staked = Math.max(0, staked);
 	const onChain = decodeOoxUserStake(b64Buf(stakeView[0]));
-	if (onChain.staked > 0 || onChain.pendingRoar > 0) staked = onChain.staked;
+	// Prefer getUserStake whenever the VM returned a payload — including explicit zero
+	// (transfer history alone can leave a phantom staked balance after full unstake).
+	if (Array.isArray(stakeView) && stakeView.length > 0) staked = onChain.staked;
+	else if (onChain.staked > 0 || onChain.pendingRoar > 0) staked = onChain.staked;
 	const pendingRoar = onChain.pendingRoar;
 	lastClaimAt = toMs(onChain.lastTs) || toMs(lastClaimAt) || toMs(firstStakeAt);
 	history.sort((a, b) => b.at - a.at);
@@ -1347,8 +1350,8 @@ export const getChainSnapshot = createServerFn({ method: "GET" }).handler(async 
 		prideVaultStaked: ooxStaked,
 		listedForSale: listedForSale || split.marketplaceHeld,
 		holders,
-		roarPriceUsd: roar?.price ?? .015,
-		egldPriceUsd: wegld?.price || 4.15,
+		roarPriceUsd: roar?.price ?? 0,
+		egldPriceUsd: wegld?.price || 0,
 		roarCirculating: Number(roar?.circulatingSupply ?? 0),
 		poolRoar: farm.remaining || farm.totalPool,
 		dailyPerNft: farm.dailyPerNft
@@ -2208,7 +2211,7 @@ export const getWalletBoard = createServerFn({ method: "POST" }).validator((data
 		}
 	}
 	const econPrice = Number((await mx("/economics").catch(() => null))?.price) || 0;
-	const egldUsd = Number(wegld?.price) || econPrice || 4.15;
+	const egldUsd = Number(wegld?.price) || econPrice || 0;
 	const mexUsd = mexToken?.price || tokens.find((t) => t.identifier === PAIRS.mex)?.price || 0;
 	const heartUsd = (mapListings(ooxNfts)[0]?.priceEgld ?? COLLECTION.mintPriceEgld) * egldUsd;
 	const egld = fromDenom(account?.balance, 18);
@@ -2574,7 +2577,7 @@ export const getMarketSnapshot = createServerFn({ method: "GET" }).handler(async
 	const lastSaleEgld = lastBuy ? lastSaleQty > 0 ? fromDenom(lastBuy.value, 18) / lastSaleQty : fromDenom(lastBuy.value, 18) : 0;
 	const lastSaleAt = lastBuy?.timestamp ?? 0;
 	const lastSaleHash = lastBuy?.txHash ?? "";
-	const roarPriceUsd = mex?.price || token?.price || .015;
+	const roarPriceUsd = mex?.price || token?.price || 0;
 	const roarPrev24h = mex?.previous24hPrice || 0;
 	const roarChange24h = roarPrev24h > 0 ? (roarPriceUsd - roarPrev24h) / roarPrev24h * 100 : 0;
 	const pairRows = (pairs ?? []).filter((p) => p.baseId === TOKEN.identifier || p.quoteId === TOKEN.identifier).map((p) => {
@@ -2657,7 +2660,7 @@ export const getMarketSnapshot = createServerFn({ method: "GET" }).handler(async
 		roarHolders: token?.accounts ?? 0,
 		roarCirculating: Number(token?.circulatingSupply ?? 0),
 		tvlUsd,
-		egldPriceUsd: wegld?.price || 4.15,
+		egldPriceUsd: wegld?.price || 0,
 		pairs: pairRows,
 		activity: activity.slice(0, 10),
 		poolRoar: farm.remaining || farm.totalPool,
@@ -2834,7 +2837,7 @@ export const prepareClaimTx = createServerFn({ method: "POST" }).validator((data
 }).handler(async ({ data }) => {
 	const { address } = data;
 	const [position, account] = await Promise.all([readOoxPosition(address), mx(`/accounts/${address}?withGuardianInfo=true`)]);
-	if (position.staked <= 0) throw new Error("No Hearts staked on OOX");
+	if (position.staked <= 0 && position.pendingRoar <= 0) throw new Error("Nothing to claim on OOX");
 	return {
 		...withAccountGuard({
 			sender: address,
@@ -3271,7 +3274,7 @@ async function listDustCandidates(address) {
 		const extra = await mx(`/accounts/${address}/tokens?from=500&size=500`);
 		if (extra?.length) tokens = [...tokens, ...extra];
 	}
-	const egldUsd = wegld?.price || 4.15;
+	const egldUsd = wegld?.price || 0;
 	const rows = [];
 	const egldAmount = fromDenom(account?.balance, 18);
 	const egldValue = egldAmount * egldUsd;
@@ -4424,8 +4427,9 @@ export const prepareSwapTx = createServerFn({ method: "POST" }).validator((data)
 		if (inAtomic <= 0n) throw new Error("Not enough EGLD (keep some for gas)");
 	}
 	let spend = fromAtomic(inAtomic, inDec);
-	const sides = aggSides(token, direction);
+	// Non-EGLD: JEXchange / xoxno aggregator only.
 	if (!isEgld) {
+		const sides = aggSides(token, direction);
 		if (direction === "to-roar") {
 			if (BigInt(otherToken?.balance ?? "0") < inAtomic) throw new Error(`Not enough ${token.ticker}`);
 		} else if (BigInt(roarToken?.balance ?? "0") < inAtomic) throw new Error("Not enough ROAR");
@@ -4456,44 +4460,8 @@ export const prepareSwapTx = createServerFn({ method: "POST" }).validator((data)
 			ticker: token.ticker
 		};
 	}
-	const aggP = xoxnoQuote(sides.from, sides.to, inAtomic, address, slippage, 650);
+	// EGLD / wrap: xExchange ROAR/WEGLD pool path only (matches SwapDesk + AGENTS.md).
 	const poolP = loadSwapPool(token).catch(() => null);
-	let agg = await aggP;
-	let aggTx = agg?.transaction;
-	let aggOut = agg?.amountOutShort ?? 0;
-	let decoded = decodeXoxnoData(aggTx?.data || agg?.txData || "");
-	if (decoded && aggOut > 0) {
-		if (direction === "to-roar") {
-			if (token.wrap) {
-				const budget = gasBudget(account?.balance, inAtomic);
-				if (budget < 1e6) throw new Error("Not enough EGLD (keep some for gas)");
-			} else if (BigInt(otherToken?.balance ?? "0") < inAtomic) throw new Error(`Not enough ${token.ticker}`);
-		} else if (BigInt(roarToken?.balance ?? "0") < inAtomic) throw new Error("Not enough ROAR");
-		const quotedGas = Math.min(Math.max(aggTx?.gasLimit ?? CHAIN.jexAggGasLimit, 1e6), 25e7);
-		const gas = token.wrap && direction === "to-roar"
-			? Math.min(quotedGas, gasBudget(account?.balance, inAtomic))
-			: quotedGas;
-		const rawValue = aggTx?.value;
-		const value = rawValue && rawValue !== "" && rawValue !== "0x" ? rawValue : token.wrap && direction === "to-roar" ? inAtomic.toString() : "0";
-		txs.push(push({
-			receiver: aggTx?.receiver || ADDRESSES.jexAggregator,
-			nonce,
-			value,
-			data: decoded,
-			gasLimit: gas
-		}));
-		return {
-			tokenId,
-			direction,
-			txs,
-			amountIn: spend,
-			amountOut: aggOut,
-			minOut: agg?.amountOutMinShort ?? 0,
-			route: "jex-agg",
-			venue: "JEXchange aggregator",
-			ticker: token.ticker
-		};
-	}
 	if (token.hops === 1) {
 		const pooled = await poolP;
 		const reserves = pooled?.reserves ?? await pairReservesOf(token.pair, token.pairToken);

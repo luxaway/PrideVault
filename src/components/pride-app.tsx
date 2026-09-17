@@ -33,6 +33,7 @@ import {
   type AppSection,
   type SwapDirection,
 } from "@/lib/config";
+import { fetchMxFarmFallback } from "@/lib/mx-fallback";
 import { copy, type Copy } from "@/lib/i18n";
 import {
   broadcastTx,
@@ -271,6 +272,20 @@ export function PrideApp() {
     ...LIVE,
   });
 
+  const snapFailed = Boolean(market.isError || snapshot.isError);
+  const snapEmpty =
+    Boolean(market.isFetched || snapshot.isFetched) &&
+    !(market.data?.ooxStaked || snapshot.data?.ooxStaked || market.data?.poolRoar || snapshot.data?.poolRoar);
+
+  const mxFallback = useQuery({
+    queryKey: ["mx-farm-fallback"],
+    queryFn: () => fetchMxFarmFallback(),
+    enabled: snapFailed || snapEmpty,
+    staleTime: 60_000,
+    refetchInterval: 90_000,
+    retry: 1,
+  });
+
   const roarFarm = useQuery({
     queryKey: ["roar-farm"],
     queryFn: () => getRoarFarm(),
@@ -343,12 +358,14 @@ export function PrideApp() {
     });
   }, [walletLive.data, refreshHoldings]);
 
-  const listed = market.data?.listedForSale ?? snapshot.data?.listedForSale ?? 0;
-  const ooxStaked = market.data?.ooxStaked ?? snapshot.data?.ooxStaked ?? 0;
-  const inWallets = market.data?.inWallets ?? snapshot.data?.inWallets ?? 0;
-  const walletHolders = snapshot.data?.walletHolderCount ?? market.data?.heartHolders ?? 0;
+  const fb = mxFallback.data;
+  const listed = market.data?.listedForSale ?? snapshot.data?.listedForSale ?? fb?.listedForSale ?? 0;
+  const ooxStaked = market.data?.ooxStaked ?? snapshot.data?.ooxStaked ?? fb?.ooxStaked ?? 0;
+  const inWallets = market.data?.inWallets ?? snapshot.data?.inWallets ?? fb?.inWallets ?? 0;
+  const walletHolders =
+    snapshot.data?.walletHolderCount ?? market.data?.heartHolders ?? fb?.walletHolderCount ?? 0;
   const prideVaultStaked = ooxStaked;
-  const pool = market.data?.poolRoar ?? snapshot.data?.poolRoar ?? 0;
+  const pool = market.data?.poolRoar ?? snapshot.data?.poolRoar ?? fb?.poolRoar ?? 0;
   const t = copy[lang];
   const daily =
     market.data?.dailyPerNft || snapshot.data?.dailyPerNft || dailyFromPool(pool, ooxStaked);
@@ -371,8 +388,8 @@ export function PrideApp() {
     return () => window.clearInterval(id);
   }, []);
 
-  const roarUsd = market.data?.roarPriceUsd || snapshot.data?.roarPriceUsd || 0.015;
-  const egldUsd = market.data?.egldPriceUsd || snapshot.data?.egldPriceUsd || 4.15;
+  const roarUsd = market.data?.roarPriceUsd || snapshot.data?.roarPriceUsd || fb?.roarPriceUsd || 0;
+  const egldUsd = market.data?.egldPriceUsd || snapshot.data?.egldPriceUsd || fb?.egldPriceUsd || 0;
   const apr = aprPct(daily, roarUsd, egldUsd);
   const canSign = session?.mode === "xportal" && signerReady;
   const sessionLost = session?.mode === "xportal" && walletChecked && !signerReady;
@@ -1107,6 +1124,12 @@ export function PrideApp() {
                 pool={pool}
                 daily={daily}
                 apr={apr}
+                error={(snapFailed || snapEmpty) && mxFallback.isError && !fb}
+                onRetry={() => {
+                  void market.refetch();
+                  void snapshot.refetch();
+                  void mxFallback.refetch();
+                }}
               />
             </div>
             <StakeDesk

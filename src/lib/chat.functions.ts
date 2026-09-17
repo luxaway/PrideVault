@@ -1388,7 +1388,7 @@ async function brokerTwitterToken(brokerToken: string) {
       subject_token_type: "urn:ietf:params:oauth:token-type:access_token",
       requested_token_type: "urn:ietf:params:oauth:token-type:access_token",
       audience: "https://api.x.com",
-      scope: "users.read tweet.read like.write tweet.write offline.access",
+      scope: "users.read tweet.read offline.access",
     });
     const res = await fetch(`${issuer}/api/auth/oauth2/token`, {
       method: "POST",
@@ -1969,118 +1969,17 @@ export const actOnXPost = createServerFn({ method: "POST" })
     if (!tweetId) throw new Error("missing");
     return { address, token, tweetId, action, text };
   })
-  .handler(async ({ data, context }) => {
+  .handler(async ({ data }) => {
+    // Disabled: chat X cards are preview + Open on X only (AGENTS.md).
     const intent = xIntentUrl(data.action, data.tweetId, data.text);
-    const sql = await getSql();
-    const gate = await sql<{ address: string }>`
-      select address from pride_chat_presence
-      where address = ${data.address} and token_hash = ${hashToken(data.token)}
-    `;
-    if (!gate[0]) throw new Error("Chat session expired");
-    const mine = await sql<{
-      x_handle: string;
-      x_verified: boolean | string | number | null;
-      x_user_id: string;
-    }>`
-      select x_handle, x_verified, x_user_id from pride_chat_profiles
-      where address = ${data.address}
-    `;
-    const row = mine[0];
-    const verified =
-      row?.x_verified === true ||
-      row?.x_verified === "t" ||
-      String(row?.x_verified) === "true" ||
-      Number(row?.x_verified) === 1;
-    const linked = Boolean(verified && cleanXHandle(row?.x_handle));
-    const { getSessionUser } = await import("@/lib/auth/verify.server");
-    const session = await getSessionUser(context.bearerToken);
-    if (!linked && !session) {
-      return {
-        ok: false as const,
-        needOauth: true as const,
-        needHandle: false as const,
-        needWriteAuth: false as const,
-        authUrl: "",
-        intent,
-      };
-    }
-    const tokens = await grokXTokens(context.bearerToken, session?.id);
-    const { loadWriteToken, saveWriteToken } = await import("./x-write.server");
-    const stored = await loadWriteToken(data.address).catch(() => ({
-      access: "",
-      refresh: "",
-      userId: "",
-      scopes: "",
-    }));
-    const candidates = uniqueTokens(
-      stored.access,
-      tokens.twitter,
-      tokens.extra,
-      tokens.broker,
-      tokens.idToken,
-    );
-    let userId = stored.userId;
-    for (const token of candidates) {
-      const me = await xApiMe(token);
-      if (me.id) {
-        userId = me.id;
-        break;
-      }
-    }
-    if (!userId) {
-      const storedId = /^\d{4,}$/.test(String(row?.x_user_id ?? "")) ? String(row?.x_user_id) : "";
-      userId = storedId;
-    }
-    if (!userId) {
-      const handle = cleanXHandle(row?.x_handle);
-      if (handle) userId = await twitterUserId(handle);
-    }
-    if (userId) {
-      for (const token of candidates) {
-        try {
-          const ok = await xApiAct(token, userId, data.action, data.tweetId, data.text);
-          if (ok) {
-            if (isTwitterUserToken(token)) {
-              await saveWriteToken(data.address, {
-                access: token,
-                refresh: stored.refresh,
-                userId,
-                userIdKey: session?.id ?? "",
-                scopes: stored.scopes,
-              }).catch(() => undefined);
-            }
-            return {
-              ok: true as const,
-              needOauth: false as const,
-              needHandle: false as const,
-              needWriteAuth: false as const,
-              authUrl: "",
-              intent,
-            };
-          }
-        } catch {
-          /* stay in chat — never bounce to X */
-        }
-      }
-    }
-    if (session && !linked) {
-      return {
-        ok: false as const,
-        needOauth: false as const,
-        needHandle: true as const,
-        needWriteAuth: false as const,
-        authUrl: "",
-        intent,
-      };
-    }
-    const authUrl = `/api/x/start?address=${encodeURIComponent(data.address)}&token=${encodeURIComponent(data.token)}&action=${encodeURIComponent(data.action)}&tweetId=${encodeURIComponent(data.tweetId)}&text=${encodeURIComponent(data.text)}`;
     return {
       ok: false as const,
       needOauth: false as const,
       needHandle: false as const,
-      needWriteAuth: true as const,
-      authUrl,
+      needWriteAuth: false as const,
+      authUrl: "",
       intent,
+      disabled: true as const,
     };
   });
 

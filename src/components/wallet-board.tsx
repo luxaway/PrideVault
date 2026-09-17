@@ -132,7 +132,7 @@ export function WalletBoardView({
   onRestakeDelegation,
   onDelegation,
   onBurnify,
-  egldUsd = 4.15,
+  egldUsd = 0,
 }: {
   t: Copy;
   session: Session | null;
@@ -2689,7 +2689,7 @@ function BurnifyCard({
   burnify,
   money,
   total,
-  egldUsd = 4.15,
+  egldUsd = 0,
   demo = false,
   canSign = false,
   busy = null,

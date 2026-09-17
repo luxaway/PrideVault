@@ -145,8 +145,9 @@ export function asSlippagePct(raw: unknown): SlippagePct {
   return 1;
 }
 
-export function slippageBpsOf(pct: SlippagePct, _hops = false) {
-  return Math.round(pct * 100);
+export function slippageBpsOf(pct: SlippagePct, hops = false) {
+  const userBps = Math.round(pct * 100);
+  return hops ? Math.max(userBps, SWAP.hopSlippageBps) : userBps;
 }
 
 export function slippageAggOf(pct: SlippagePct) {
@@ -285,8 +286,6 @@ export const LINKS = {
   xPools: "https://xexchange.com/pools",
   xUnlock: "https://xexchange.com/unlock",
   jex: "https://jexchange.io",
-  jexSwap: "https://app.jexchange.io/swap",
-  jexApp: "https://app.jexchange.io",
   onedex: "https://onedex.app",
   explorerCollection: "https://explorer.multiversx.com/collections/HORVSN-a3fd09",
   explorerToken: "https://explorer.multiversx.com/tokens/ROAR-e5185d",

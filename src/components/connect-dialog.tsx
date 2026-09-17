@@ -18,6 +18,8 @@ import { getWalletHoldings } from "@/lib/mx.functions";
 import { useVaultStore } from "@/lib/store";
 import { isErdAddress } from "@/lib/utils";
 import {
+  abortWalletConnect,
+  commitWalletSession,
   connectWalletConnect,
   connectWebview,
   isMobileBrowser,
@@ -45,10 +47,13 @@ export function ConnectDialog({
   const [waiting, setWaiting] = useState(false);
   const [error, setError] = useState("");
   const gen = useRef(0);
+  const waitingRef = useRef(false);
 
   useEffect(() => {
     if (!open) {
       gen.current += 1;
+      if (waitingRef.current) abortWalletConnect();
+      waitingRef.current = false;
       setQrSvg("");
       setWcUri("");
       setWaiting(false);
@@ -68,6 +73,8 @@ export function ConnectDialog({
         lastTick: holdings.lastTick,
         history: holdings.history,
       });
+      // Persist WC only after Zustand has the live session.
+      commitWalletSession(holdings.address, isXPortalWebview() ? "webview" : "wc");
     } else {
       connectLive(holdings.address, holdings.hearts, holdings.roar, holdings.egld, {
         heartsStaked: holdings.heartsStaked,
@@ -76,12 +83,15 @@ export function ConnectDialog({
         history: holdings.history,
       });
     }
+    waitingRef.current = false;
+    setWaiting(false);
     onOpenChange(false);
   }
 
   async function startXportal() {
     const mine = ++gen.current;
     setBusy(true);
+    waitingRef.current = true;
     setWaiting(true);
     setError("");
     try {
@@ -114,6 +124,7 @@ export function ConnectDialog({
       const message = err instanceof Error ? err.message : t.buyError;
       setError(message);
       toast.error(message);
+      waitingRef.current = false;
       setWaiting(false);
       setQrSvg("");
       setWcUri("");
@@ -172,7 +183,10 @@ export function ConnectDialog({
               type="button"
               variant="ghost"
               className="w-full"
-              onClick={() => onOpenChange(false)}
+              onClick={() => {
+                abortWalletConnect();
+                onOpenChange(false);
+              }}
             >
               {t.cancel}
             </Button>

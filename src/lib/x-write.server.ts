@@ -6,7 +6,7 @@ import { isErdAddress } from "./utils";
 const X_OAUTH_CLIENT_ID =
   process.env.X_CLIENT_ID?.trim() || "YzluQkprbG1GSU40U3dwREdWNUY6MTpjaQ";
 const X_OAUTH_CLIENT_SECRET = process.env.X_CLIENT_SECRET?.trim() || "";
-const X_OAUTH_SCOPES = "users.read tweet.read like.write tweet.write offline.access";
+const X_OAUTH_SCOPES = "users.read tweet.read offline.access";
 
 function isChatAddress(value: string) {
   return value === DEMO_ADDRESS || isErdAddress(value);
