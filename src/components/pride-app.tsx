@@ -1,1 +1,1 @@
-test
+@/tmp/mcp_pride_content.txt
