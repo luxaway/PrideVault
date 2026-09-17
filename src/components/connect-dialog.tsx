@@ -154,12 +154,11 @@ export function ConnectDialog({
       <DialogContent>
         <DialogHeader>
           <DialogTitle>{t.connect}</DialogTitle>
-          <DialogDescription>{t.xportalLead}</DialogDescription>
+          <DialogDescription>{waiting ? t.scanXportal : t.xportalLead}</DialogDescription>
         </DialogHeader>
 
         {waiting ? (
           <div className="grid gap-3">
-            <p className="text-sm text-muted">{t.scanXportal}</p>
             {qrSvg ? (
               <div
                 className="mx-auto w-full max-w-[220px] rounded-lg bg-bg p-3"
@@ -192,7 +191,7 @@ export function ConnectDialog({
             </Button>
           </div>
         ) : (
-          <>
+          <div className="grid gap-3">
             <Button
               type="button"
               className="h-12 w-full justify-start gap-3"
@@ -204,41 +203,48 @@ export function ConnectDialog({
               {t.connectXportal}
             </Button>
             {error ? <p className="text-center text-xs text-ember">{error}</p> : null}
-            <Button
-              className="h-12 w-full justify-start gap-3"
-              onClick={() => {
-                connectDemo();
-                onOpenChange(false);
-              }}
-            >
-              <Wallet className="size-4" />
-              {t.demo}
-            </Button>
-            <div className="grid gap-2">
-              <label className="text-xs font-medium text-muted" htmlFor="erd-addr">
-                {t.pasteReadonly}
-              </label>
-              <Input
-                id="erd-addr"
-                value={addr}
-                onChange={(e) => setAddr(e.target.value.toLowerCase())}
-                placeholder={t.pasteHint}
-                autoComplete="off"
-                spellCheck={false}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") void loadAddress();
-                }}
-              />
-              <Button
-                variant="outline"
-                className="w-full"
-                disabled={busy}
-                onClick={() => void loadAddress()}
-              >
-                {busy ? <LionRun size="sm" label={t.connecting} /> : null}
-                {busy ? t.connecting : t.lookup}
-              </Button>
-            </div>
+            <details className="rounded-md">
+              <summary className="cursor-pointer list-none py-1 text-xs font-medium text-muted marker:content-none [&::-webkit-details-marker]:hidden hover:text-fg">
+                {t.moreOptions}
+              </summary>
+              <div className="mt-3 grid gap-3">
+                <Button
+                  className="h-12 w-full justify-start gap-3"
+                  onClick={() => {
+                    connectDemo();
+                    onOpenChange(false);
+                  }}
+                >
+                  <Wallet className="size-4" />
+                  {t.demo}
+                </Button>
+                <div className="grid gap-2">
+                  <label className="text-xs font-medium text-muted" htmlFor="erd-addr">
+                    {t.pasteReadonly}
+                  </label>
+                  <Input
+                    id="erd-addr"
+                    value={addr}
+                    onChange={(e) => setAddr(e.target.value.toLowerCase())}
+                    placeholder={t.pasteHint}
+                    autoComplete="off"
+                    spellCheck={false}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") void loadAddress();
+                    }}
+                  />
+                  <Button
+                    variant="outline"
+                    className="w-full"
+                    disabled={busy}
+                    onClick={() => void loadAddress()}
+                  >
+                    {busy ? <LionRun size="sm" label={t.connecting} /> : null}
+                    {busy ? t.connecting : t.lookup}
+                  </Button>
+                </div>
+              </div>
+            </details>
             <a
               href={LINKS.xportal}
               target="_blank"
@@ -247,7 +253,7 @@ export function ConnectDialog({
             >
               xPortal
             </a>
-          </>
+          </div>
         )}
       </DialogContent>
     </Dialog>
