@@ -25,9 +25,10 @@ export function sectionFromHash(hash: string): AppSection {
   return "heart";
 }
 
-/** Empty until the ROAR Dice SC is deployed on devnet. */
+/** Fill roarDice + treasury after the SC is live. Treasury = PrideVault ops wallet. */
 export const GAMES = {
   roarDice: "",
+  treasury: "",
   rakeEgldBps: 400,
   rakeRoarBps: 200,
   houseEdgeBps: 500,
