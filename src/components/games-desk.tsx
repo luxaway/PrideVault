@@ -41,7 +41,7 @@ export function GamesDesk({
         <div className="flex items-center gap-2">
           <Dices className="size-5 text-ember" />
           <h2 className="text-lg font-semibold">{t.gamesTitle}</h2>
-          <Badge variant="secondary">{t.gamesV1}</Badge>
+          <Badge variant="mute">{t.gamesV1}</Badge>
         </div>
         <p className="mt-2 text-sm leading-relaxed text-muted">{t.gamesLead}</p>
 
