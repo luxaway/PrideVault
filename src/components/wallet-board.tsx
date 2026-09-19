@@ -1,4 +1,6 @@
 import {
+  memo,
+  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -113,7 +115,7 @@ type MoneyFn = (usd: number, digits?: number) => string;
 type HistPoint = { t: number; usd: number };
 type Slice = { id: string; label: string; value: number; tone: "ember" | "volt" | "fg" };
 
-export function WalletBoardView({
+export const WalletBoardView = memo(function WalletBoardView({
   t,
   session,
   board,
@@ -200,13 +202,16 @@ export function WalletBoardView({
       localStorage.setItem(QUOTE_KEY, next);
     } catch {}
   }
-  function money(usd: number, digits?: number) {
-    if (quote === "egld") {
-      const egld = egldUsd > 0 ? usd / egldUsd : 0;
-      return formatEgld(egld, digits ?? (Math.abs(egld) >= 100 ? 2 : Math.abs(egld) >= 1 ? 3 : 4));
-    }
-    return formatUsdc(usd, digits ?? (Math.abs(usd) >= 1e3 ? 0 : 2));
-  }
+  const money = useCallback(
+    (usd: number, digits?: number) => {
+      if (quote === "egld") {
+        const egld = egldUsd > 0 ? usd / egldUsd : 0;
+        return formatEgld(egld, digits ?? (Math.abs(egld) >= 100 ? 2 : Math.abs(egld) >= 1 ? 3 : 4));
+      }
+      return formatUsdc(usd, digits ?? (Math.abs(usd) >= 1e3 ? 0 : 2));
+    },
+    [quote, egldUsd],
+  );
   if (!session)
     return (
       <section id="wallet" className="scroll-mt-32 mx-auto max-w-xl px-4 py-10">
@@ -632,6 +637,7 @@ export function WalletBoardView({
               <img
                 src="/heart-of-roar.jpg"
                 alt=""
+                decoding="async"
                 className="size-16 rounded-lg object-cover sm:size-20"
               />
 
@@ -690,24 +696,14 @@ export function WalletBoardView({
             ) : (
               <ul>
                 {shownTokens.map((row) => (
-                  <li key={row.id} className="border-t border-fg/8 first:border-t-0">
+                  <li key={row.id} className="content-auto border-t border-fg/8 first:border-t-0">
                     <TokenRow
                       t={t}
                       token={row}
                       money={money}
                       share={total > 0 ? row.valueUsd / total : 0}
                       onSwap={onSwap}
-                      onSend={
-                        onSend
-                          ? () =>
-                              setSendAsset({
-                                id: row.id,
-                                ticker: row.ticker,
-                                amount: row.amount,
-                                icon: row.icon,
-                              })
-                          : undefined
-                      }
+                      onSend={onSend ? setSendAsset : undefined}
                     />
                   </li>
                 ))}
@@ -730,24 +726,14 @@ export function WalletBoardView({
             ) : (
               <ul>
                 {shownLp.map((row) => (
-                  <li key={row.id} className="border-t border-fg/8 first:border-t-0">
+                  <li key={row.id} className="content-auto border-t border-fg/8 first:border-t-0">
                     <PoolRow
                       t={t}
                       pool={row}
                       money={money}
                       share={total > 0 ? row.valueUsd / total : 0}
                       onSwap={onSwap}
-                      onSend={
-                        onSend
-                          ? () =>
-                              setSendAsset({
-                                id: row.id,
-                                ticker: row.amountTicker,
-                                amount: row.amount,
-                                icon: row.icon,
-                              })
-                          : undefined
-                      }
+                      onSend={onSend ? setSendAsset : undefined}
                     />
                   </li>
                 ))}
@@ -797,17 +783,7 @@ export function WalletBoardView({
                         money={money}
                         share={total > 0 ? row.valueUsd / total : 0}
                         onSwap={onSwap}
-                        onSend={
-                          onSend
-                            ? () =>
-                                setSendAsset({
-                                  id: row.id,
-                                  ticker: row.amountTicker,
-                                  amount: row.amount,
-                                  icon: row.icon,
-                                })
-                            : undefined
-                        }
+                        onSend={onSend ? setSendAsset : undefined}
                       />
                     </li>
                   ))}
@@ -844,24 +820,14 @@ export function WalletBoardView({
             ) : (
               <ul>
                 {shownXmex.map((row) => (
-                  <li key={row.id} className="border-t border-fg/8 first:border-t-0">
+                  <li key={row.id} className="content-auto border-t border-fg/8 first:border-t-0">
                     <PoolRow
                       t={t}
                       pool={row}
                       money={money}
                       share={total > 0 ? row.valueUsd / total : 0}
                       onSwap={onSwap}
-                      onSend={
-                        onSend
-                          ? () =>
-                              setSendAsset({
-                                id: row.id,
-                                ticker: row.amountTicker,
-                                amount: row.amount,
-                                icon: row.icon,
-                              })
-                          : undefined
-                      }
+                      onSend={onSend ? setSendAsset : undefined}
                     />
                   </li>
                 ))}
@@ -954,6 +920,8 @@ export function WalletBoardView({
                       key={row.identifier}
                       src={row.thumbnail}
                       alt=""
+                      loading="lazy"
+                      decoding="async"
                       className="size-10 rounded-lg object-cover shadow-[var(--shadow-border)]"
                     />
                   ))}
@@ -974,6 +942,8 @@ export function WalletBoardView({
                       <img
                         src={row.thumbnail}
                         alt=""
+                        loading="lazy"
+                        decoding="async"
                         className="aspect-square w-full object-cover"
                       />
                       <div className="px-3 py-2.5">
@@ -1004,7 +974,7 @@ export function WalletBoardView({
       />
     </section>
   );
-}
+});
 function isDust(valueUsd: number, ticker?: string) {
   if (ticker && KEEP_TICKERS.has(ticker)) return false;
   return valueUsd < DUST_USD;
@@ -1908,7 +1878,7 @@ function ValidatorsCard({
                                 }}
                               >
                                 {p.avatar ? (
-                                  <img src={p.avatar} alt="" className="size-7 rounded-full object-cover" />
+                                  <img src={p.avatar} alt="" loading="lazy" decoding="async" className="size-7 rounded-full object-cover" />
                                 ) : (
                                   <span className="inline-flex size-7 items-center justify-center rounded-full bg-volt/15 text-volt">
                                     <Landmark className="size-3.5" />
@@ -2068,7 +2038,7 @@ function ValidatorRow({
     <div className={cn("px-3 py-2 transition-[background-color] duration-150", open && "bg-volt/10")}>
       <button type="button" onClick={onToggle} className="flex min-h-11 w-full items-center gap-2.5 text-left">
         {row.avatar ? (
-          <img src={row.avatar} alt="" className="size-7 shrink-0 rounded-full object-cover" />
+          <img src={row.avatar} alt="" loading="lazy" decoding="async" className="size-7 shrink-0 rounded-full object-cover" />
         ) : (
           <span className="inline-flex size-7 shrink-0 items-center justify-center rounded-full bg-volt/15 text-volt">
             <Landmark className="size-3.5" />
@@ -2158,7 +2128,7 @@ function positionTitle(t: Copy, row: BoardPosition) {
   if (row.titleKey) return t[row.titleKey];
   return row.title ?? "";
 }
-function PositionRow({
+const PositionRow = memo(function PositionRow({
   t,
   row,
   money,
@@ -2206,32 +2176,36 @@ function PositionRow({
       </p>
     </button>
   );
-}
+});
 function venueLabel(t: Copy, venue: BoardVenue) {
   if (venue === "xexchange") return t.venueXex;
   if (venue === "onedex") return t.venueOnedex;
   if (venue === "jexchange") return t.venueJex;
   return t.venueOther;
 }
-function PairMark({ icon, icon2 }: { icon: string; icon2?: string }) {
+const PairMark = memo(function PairMark({ icon, icon2 }: { icon: string; icon2?: string }) {
   if (!icon2) {
-    return <img src={icon} alt="" className="size-9 rounded-full object-cover" />;
+    return <img src={icon} alt="" loading="lazy" decoding="async" className="size-9 rounded-full object-cover" />;
   }
   return (
     <span className="relative inline-flex size-10 shrink-0" aria-hidden>
       <img
         src={icon}
         alt=""
+        loading="lazy"
+        decoding="async"
         className="absolute top-0 left-0 z-10 size-7 rounded-full object-cover shadow-[var(--shadow-border)]"
       />
       <img
         src={icon2}
         alt=""
+        loading="lazy"
+        decoding="async"
         className="absolute right-0 bottom-0 size-7 rounded-full object-cover shadow-[var(--shadow-border)]"
       />
     </span>
   );
-}
+});
 function PeekTip({
   label,
   children,
@@ -2279,7 +2253,7 @@ function peekDigits(n: number) {
   return 6;
 }
 
-function TokenRow({
+const TokenRow = memo(function TokenRow({
   t,
   token,
   money,
@@ -2292,7 +2266,7 @@ function TokenRow({
   money: MoneyFn;
   share: number;
   onSwap: (id?: string) => void;
-  onSend?: () => void;
+  onSend?: (asset: { id: string; ticker: string; amount: number; icon: string }) => void;
 }) {
   const [open, setOpen] = useState(false);
   const eq = token.equivalent;
@@ -2304,7 +2278,7 @@ function TokenRow({
           onClick={() => setOpen((v) => !v)}
           className="flex min-h-14 min-w-0 flex-1 items-center gap-3 px-2 py-2.5 text-left hover:bg-surface-2"
         >
-          <img src={token.icon} alt="" className="size-9 rounded-full object-cover" />
+          <img src={token.icon} alt="" loading="lazy" decoding="async" className="size-9 rounded-full object-cover" />
           <div className="min-w-0 flex-1">
             <div className="flex items-baseline justify-between gap-3">
               <p className="truncate text-sm font-medium">{token.ticker}</p>
@@ -2344,7 +2318,20 @@ function TokenRow({
           </p>
           <div className="flex flex-wrap gap-2">
             {onSend ? (
-              <Button type="button" size="sm" variant="outline" className="h-11" onClick={onSend}>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                className="h-11"
+                onClick={() =>
+                  onSend({
+                    id: token.id,
+                    ticker: token.ticker,
+                    amount: token.amount,
+                    icon: token.icon,
+                  })
+                }
+              >
                 <Send className="size-3.5" />
                 {t.walletSend}
               </Button>
@@ -2364,8 +2351,8 @@ function TokenRow({
       ) : null}
     </div>
   );
-}
-function PoolRow({
+});
+const PoolRow = memo(function PoolRow({
   t,
   pool,
   money,
@@ -2378,7 +2365,7 @@ function PoolRow({
   money: MoneyFn;
   share: number;
   onSwap?: (id?: string) => void;
-  onSend?: () => void;
+  onSend?: (asset: { id: string; ticker: string; amount: number; icon: string }) => void;
 }) {
   const [open, setOpen] = useState(false);
   const kind =
@@ -2460,7 +2447,7 @@ function PoolRow({
             <ul className="rounded-lg bg-surface-2 p-2">
               {under.map((u) => (
                 <li key={u.id} className="flex min-h-11 items-center gap-3 px-2 py-1.5">
-                  <img src={u.icon} alt="" className="size-8 rounded-full object-cover" />
+                  <img src={u.icon} alt="" loading="lazy" decoding="async" className="size-8 rounded-full object-cover" />
                   <div className="min-w-0 flex-1">
                     <p className="truncate text-sm font-medium">{u.ticker}</p>
                     <p className="text-[11px] text-muted">
@@ -2483,7 +2470,20 @@ function PoolRow({
           )}
           <div className="mt-2 flex flex-wrap gap-2">
             {onSend ? (
-              <Button type="button" size="sm" variant="outline" className="h-11" onClick={onSend}>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                className="h-11"
+                onClick={() =>
+                  onSend({
+                    id: pool.id,
+                    ticker: pool.amountTicker,
+                    amount: pool.amount,
+                    icon: pool.icon,
+                  })
+                }
+              >
                 <Send className="size-3.5" />
                 {t.walletSend}
               </Button>
@@ -2505,7 +2505,7 @@ function PoolRow({
       ) : null}
     </div>
   );
-}
+});
 
 function SendSheet({
   t,
@@ -2536,7 +2536,7 @@ function SendSheet({
           <DialogDescription>{t.walletSendLead}</DialogDescription>
         </DialogHeader>
         <div className="flex items-center gap-3 rounded-lg bg-surface-2 px-3 py-2.5">
-          <img src={asset.icon} alt="" className="size-9 rounded-full object-cover" />
+          <img src={asset.icon} alt="" decoding="async" className="size-9 rounded-full object-cover" />
           <div className="min-w-0">
             <p className="text-sm font-medium">{asset.ticker}</p>
             <p className="text-[11px] text-muted">
@@ -2652,7 +2652,7 @@ function roleLabel(t: Copy, role: ProtocolRow["role"]) {
   return t.hatomLiquid;
 }
 
-function ProtocolLine({
+const ProtocolLine = memo(function ProtocolLine({
   row,
   t,
   money,
@@ -2664,8 +2664,8 @@ function ProtocolLine({
   share: number;
 }) {
   return (
-    <li className="flex min-h-14 items-center gap-3 rounded-md px-2 py-2">
-      <img src={row.icon} alt="" className="size-9 rounded-full object-cover" />
+    <li className="content-auto flex min-h-14 items-center gap-3 rounded-md px-2 py-2">
+      <img src={row.icon} alt="" loading="lazy" decoding="async" className="size-9 rounded-full object-cover" />
       <div className="min-w-0 flex-1">
         <div className="flex items-baseline justify-between gap-3">
           <p className="truncate text-sm font-medium">{row.name}</p>
@@ -2682,7 +2682,7 @@ function ProtocolLine({
       </div>
     </li>
   );
-}
+});
 
 function BurnifyCard({
   t,

@@ -1,12 +1,12 @@
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { ArrowUpRight } from "lucide-react";
-import { useMemo, useState, type MouseEvent, type TouchEvent } from "react";
+import { memo, useMemo, useState, type MouseEvent, type TouchEvent } from "react";
 import { LINKS, TIMEFRAMES, type ChartPair, type ChartTimeframe } from "@/lib/config";
 import type { Copy } from "@/lib/i18n";
 import { getRoarChart, type Candle } from "@/lib/mx.functions";
 import { cn, formatNum, formatPct, formatUsd } from "@/lib/utils";
 
-export function RoarChart({
+export const RoarChart = memo(function RoarChart({
   t,
   roarUsd,
   change24h,
@@ -115,7 +115,7 @@ export function RoarChart({
       </div>
     </section>
   );
-}
+});
 
 function ChartStat({ label, value }: { label: string; value: string }) {
   return (

@@ -27,8 +27,8 @@ export function SignSheet({ t }: { t: Copy }) {
       <button
         type="button"
         className="absolute inset-0 bg-bg/80"
-        aria-label={t.signHide}
-        onClick={() => dismissSignUi()}
+        aria-hidden
+        tabIndex={-1}
       />
       <aside className="relative w-full max-w-md animate-[rise_250ms_var(--ease-smooth-out)] rounded-xl bg-surface p-6 shadow-[var(--shadow-border)]">
         <div className="flex items-center gap-3">

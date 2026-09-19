@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft, BadgeCheck, Check, Coins, Copy as CopyIcon, ExternalLink, ImagePlus, MessageCircle, Moon, MoreHorizontal, Pencil, Reply, Send, SmilePlus, Sun, Trash2, X } from "lucide-react";
-import { useEffect, useMemo, useRef, useState, type MutableRefObject, type ReactNode, type RefObject } from "react";
+import { useEffect, useMemo, useRef, useState, memo, type MutableRefObject, type ReactNode, type RefObject } from "react";
 import { createPortal } from "react-dom";
 import { toast } from "sonner";
 import { RoarMark, HeartMark } from "@/components/mark";
@@ -303,6 +303,8 @@ function SaleCard({
         <img
           src="/nfts/heart-thumb.jpg"
           alt=""
+          loading="lazy"
+          decoding="async"
           className="size-14 shrink-0 rounded-lg object-cover outline outline-1 -outline-offset-1 outline-fg/15"
         />
         <div className="min-w-0 flex-1">
@@ -520,6 +522,8 @@ function HolderPopup({
                   <img
                     src="/nfts/roar-token.png"
                     alt=""
+                    loading="lazy"
+                    decoding="async"
                     className="size-5 rounded-full object-cover"
                   />
                 }
@@ -622,6 +626,8 @@ function XPostBox({ url, t }: { url: string; t: Copy }) {
           <img
             src={post.avatar}
             alt=""
+            loading="lazy"
+            decoding="async"
             className="size-10 shrink-0 rounded-full object-cover"
             referrerPolicy="no-referrer"
           />
@@ -652,6 +658,8 @@ function XPostBox({ url, t }: { url: string; t: Copy }) {
           <img
             src={post.image}
             alt=""
+            loading="lazy"
+            decoding="async"
             className="max-h-48 w-full max-w-full rounded-lg object-cover"
             referrerPolicy="no-referrer"
           />
@@ -677,7 +685,7 @@ function keepChatRow(row: ChatMessage, saleSince: number) {
   return saleSince <= 0 || row.at >= saleSince;
 }
 
-export function PrideChat({
+export const PrideChat = memo(function PrideChat({
   t,
   session,
   onConnect,
@@ -871,7 +879,7 @@ export function PrideChat({
     const prev = document.body.style.overflow;
     document.body.style.overflow = "hidden";
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setView("dock");
+      if (e.key === "Escape") setView("off");
     };
     window.addEventListener("keydown", onKey);
     const focusTimer = window.setTimeout(() => inputRef.current?.focus(), 220);
@@ -1335,7 +1343,7 @@ export function PrideChat({
                 scroller={scroller}
                 stick={stick}
                 inputRef={inputRef}
-                onHide={() => setView("dock")}
+                onHide={() => setView("off")}
                 onConnect={onConnect}
                 onSubmit={submit}
                 onSendRoar={sendRoar}
@@ -1440,7 +1448,7 @@ export function PrideChat({
     <>
       <button
         type="button"
-        onClick={() => setView((v) => (v === "full" ? "dock" : "full"))}
+        onClick={() => setView((v) => (v === "off" ? "full" : "off"))}
         aria-label={t.chatOpen}
         aria-expanded={view === "full"}
         title={onlineLabel}
@@ -1459,7 +1467,7 @@ export function PrideChat({
       {screen}
     </>
   );
-}
+});
 
 function ChatScreen({
   t,
@@ -1984,7 +1992,7 @@ function ChatScreen({
               );
               if (row.sale) {
                 return (
-                  <li key={row.id} id={`pv-msg-${row.id}`} className="min-w-0 max-w-full">
+                  <li key={row.id} id={`pv-msg-${row.id}`} className="content-auto min-w-0 max-w-full">
                     {dayLabel}
                     <div className="mx-auto flex w-full min-w-0 max-w-md flex-col items-center">
                       <p className="mb-1 text-xs text-chat-meta tabular">
@@ -1997,7 +2005,7 @@ function ChatScreen({
                 );
               }
               return (
-                <li key={row.id} id={`pv-msg-${row.id}`} className="min-w-0 max-w-full">
+                <li key={row.id} id={`pv-msg-${row.id}`} className="content-auto min-w-0 max-w-full">
                   {dayLabel}
                   <div className={cn("flex w-full min-w-0 max-w-full items-end gap-2", mine ? "flex-row-reverse" : "flex-row")}>
                     {stacked ? (
@@ -2174,6 +2182,8 @@ function ChatScreen({
                             <img
                               src={safeImageSrc(row.image)}
                               alt=""
+                              loading="lazy"
+                              decoding="async"
                               className="max-h-48 w-full max-w-full rounded-lg object-cover"
                               onLoad={() => {
                                 const el = scroller.current;
@@ -2425,15 +2435,11 @@ function ChatDock({
       <button
         type="button"
         onClick={onOpen}
-        className="relative inline-flex h-14 items-center gap-2 rounded-full bg-chat-in py-1 pr-4 pl-1 text-chat-in-fg shadow-[var(--shadow-border-hover)]"
+        className="relative inline-flex size-14 items-center justify-center rounded-full bg-chat-in text-chat-in-fg shadow-[var(--shadow-border-hover)]"
         aria-label={t.chatShow}
         title={t.chatShow}
       >
         <RoarMark className="size-12 rounded-full" />
-        <span className="text-left">
-          <span className="block font-display text-sm leading-none">{t.chatTitle}</span>
-          <span className="mt-1 block text-xs text-volt">{fillAmt(t.chatOnline, String(online))}</span>
-        </span>
         {unread > 0 ? (
           <span className="absolute -top-1 -right-1 min-w-5 rounded-full bg-ember px-1.5 text-center text-[11px] font-medium tabular text-primary-foreground">
             {unread}

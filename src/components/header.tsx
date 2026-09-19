@@ -1,3 +1,4 @@
+import { memo } from "react";
 import { LogOut } from "lucide-react";
 import { toast } from "sonner";
 import { PrideChat } from "@/components/pride-chat";
@@ -8,7 +9,7 @@ import { useVaultStore } from "@/lib/store";
 import { formatEgld, formatNum, shortAddr } from "@/lib/utils";
 import { disconnectWallet } from "@/lib/wallet";
 
-export function Header({
+export const Header = memo(function Header({
   t,
   onConnect,
   signerReady,
@@ -107,7 +108,7 @@ export function Header({
       </div>
     </header>
   );
-}
+});
 
 function LangToggle({
   lang,

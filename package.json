@@ -1,5 +1,5 @@
 {
-  "name": "pridevault",
+  "name": "app-builder-workspace",
   "private": true,
   "sideEffects": [
     "*.css",

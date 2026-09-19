@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { memo, useEffect, useMemo, useState } from "react";
 import { Activity, Minus, Plus, RefreshCw } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -195,7 +195,7 @@ function LiveBadge({ t, fetching }: { t: Copy; fetching: boolean }) {
   );
 }
 
-function ListingCard({
+const ListingCard = memo(function ListingCard({
   t,
   listing,
   featured = false,
@@ -348,7 +348,7 @@ function ListingCard({
       </div>
     </article>
   );
-}
+});
 
 function EmptyListings({ t }: { t: Copy }) {
   return (

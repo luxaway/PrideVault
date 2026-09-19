@@ -658,6 +658,8 @@ function toWalletPlain(tx: UnsignedTx): IPlainTransactionObject {
     version: tx.version ?? CHAIN.txVersion,
   };
   if (tx.data) plain.data = bytesToBase64(new TextEncoder().encode(tx.data));
+  if (tx.options != null) plain.options = tx.options;
+  if (tx.guardian) plain.guardian = tx.guardian;
   return plain;
 }
 
@@ -775,18 +777,47 @@ async function ensureReady(): Promise<WalletKind> {
 }
 
 async function signViaWebview(plains: IPlainTransactionObject[]): Promise<IPlainTransactionObject[]> {
-  const pending = waitForPortal(["SIGN_TRANSACTIONS_RESPONSE", "CANCEL_RESPONSE"], 180_000);
-  rnPost({
-    type: "SIGN_TRANSACTIONS_REQUEST",
-    payload: plains,
-  });
-  const res = await pending;
-  if (res.type === "CANCEL_RESPONSE") throw new Error("Signature cancelled in xPortal");
-  const signed = res.payload?.data;
-  if (!Array.isArray(signed) || signed.length !== plains.length) {
-    throw new Error("xPortal did not return signed transactions");
+  const pending = waitForPortal(["SIGN_TRANSACTIONS_RESPONSE", "CANCEL_RESPONSE"], 90_000);
+  const send = () =>
+    rnPost({
+      type: "SIGN_TRANSACTIONS_REQUEST",
+      payload: plains,
+    });
+  send();
+  const retry = window.setTimeout(() => {
+    try {
+      send();
+    } catch {
+      /* native bridge may already have the first request */
+    }
+  }, 2500);
+  try {
+    const res = await pending;
+    if (res.type === "CANCEL_RESPONSE") throw new Error("Signature cancelled in xPortal");
+    const signed = res.payload?.data;
+    if (!Array.isArray(signed) || signed.length !== plains.length) {
+      throw new Error("xPortal did not return signed transactions");
+    }
+    return signed as IPlainTransactionObject[];
+  } finally {
+    window.clearTimeout(retry);
   }
-  return signed as IPlainTransactionObject[];
+}
+
+function withTimeout<T>(p: Promise<T>, ms: number, message: string): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = window.setTimeout(() => reject(new Error(message)), ms);
+    p.then(
+      (value) => {
+        window.clearTimeout(timer);
+        resolve(value);
+      },
+      (err) => {
+        window.clearTimeout(timer);
+        reject(err);
+      },
+    );
+  });
 }
 
 async function signViaWc(plains: IPlainTransactionObject[]): Promise<IPlainTransactionObject[]> {
@@ -807,26 +838,35 @@ async function signViaWc(plains: IPlainTransactionObject[]): Promise<IPlainTrans
   }, 40);
 
   const chainId = `mvx:${CHAIN.id}`;
+  const signWait = "xPortal did not sign in time. Open xPortal and retry.";
   try {
     if (plains.length === 1) {
-      const response = await client.request({
+      const response = await withTimeout(
+        client.request({
+          chainId,
+          topic,
+          request: {
+            method: "mvx_signTransaction",
+            params: { transaction: plains[0] },
+          },
+        }),
+        90_000,
+        signWait,
+      );
+      return [mergeSignature(plains[0], response)];
+    }
+    const response = (await withTimeout(
+      client.request({
         chainId,
         topic,
         request: {
-          method: "mvx_signTransaction",
-          params: { transaction: plains[0] },
+          method: "mvx_signTransactions",
+          params: { transactions: plains },
         },
-      });
-      return [mergeSignature(plains[0], response)];
-    }
-    const response = (await client.request({
-      chainId,
-      topic,
-      request: {
-        method: "mvx_signTransactions",
-        params: { transactions: plains },
-      },
-    })) as { signatures?: unknown[] };
+      }),
+      90_000,
+      signWait,
+    )) as { signatures?: unknown[] };
     const signatures = response?.signatures;
     if (!Array.isArray(signatures) || signatures.length !== plains.length) {
       throw new Error("xPortal did not return signed transactions");

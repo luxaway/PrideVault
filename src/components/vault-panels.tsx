@@ -1,3 +1,4 @@
+import { memo } from "react";
 import { ArrowUpRight } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { COLLECTION, LINKS, VAULT, explorerAddrUrl } from "@/lib/config";
@@ -10,7 +11,7 @@ function dash(n: number, digits: number) {
   return n > 0 ? formatNum(n, digits) : "—";
 }
 
-export function StatsStrip({
+export const StatsStrip = memo(function StatsStrip({
   t,
   staked,
   listed,
@@ -53,7 +54,7 @@ export function StatsStrip({
       </div>
     </section>
   );
-}
+});
 
 export function BoostPanel({ t, staked, daily }: { t: Copy; staked: number; daily: number }) {
   const occ = occupancy(staked) * 100;
@@ -178,10 +179,10 @@ export function PridePanel({
   );
 }
 
-export function Footer({ t }: { t: Copy }) {
+export const Footer = memo(function Footer({ t }: { t: Copy }) {
   return (
     <footer className="border-t border-fg/8 py-8 pb-[max(2rem,env(safe-area-inset-bottom))]">
       <p className="mx-auto max-w-6xl px-4 text-center text-xs text-muted">{t.footer}</p>
     </footer>
   );
-}
+});

@@ -1,9 +1,10 @@
+import { memo } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import type { Copy } from "@/lib/i18n";
 import { formatNum } from "@/lib/utils";
 
-export function Hero({
+export const Hero = memo(function Hero({
   t,
   listed,
   ooxStaked,
@@ -68,13 +69,9 @@ export function Hero({
               alt="ROAR"
               className="aspect-square w-full object-cover"
             />
-            <div className="absolute inset-x-0 bottom-0 flex items-center justify-between bg-bg/70 px-2.5 py-1.5 text-[10px] uppercase tracking-[0.14em] backdrop-blur-sm">
-              <span className="text-volt">{t.volt}</span>
-              <span className="text-ember">{t.fire}</span>
-            </div>
           </div>
         </div>
       </div>
     </section>
   );
-}
+});

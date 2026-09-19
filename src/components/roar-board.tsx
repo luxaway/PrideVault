@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { memo, useMemo, useState } from "react";
 import { ArrowUpRight, Loader2, Trophy } from "lucide-react";
 import { RoarFlowChart } from "@/components/roar-flow-chart";
 import { Badge } from "@/components/ui/badge";
@@ -32,7 +32,7 @@ function RankMark({ rank }: { rank: number }) {
   );
 }
 
-function HolderRow({
+const HolderRow = memo(function HolderRow({
   row,
   t,
   peak,
@@ -48,7 +48,7 @@ function HolderRow({
   return (
     <li
       className={cn(
-        "relative overflow-hidden rounded-lg px-3 py-3 shadow-[var(--shadow-border)]",
+        "content-auto relative overflow-hidden rounded-lg px-3 py-3 shadow-[var(--shadow-border)]",
         mine ? "bg-ember/12" : "bg-surface-2",
       )}
     >
@@ -101,7 +101,7 @@ function HolderRow({
       </div>
     </li>
   );
-}
+});
 
 export function RoarBoardView({
   t,

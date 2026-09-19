@@ -1,9 +1,9 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { ConnectDialog } from "@/components/connect-dialog";
 import { Header } from "@/components/header";
-import { Hero } from "@/components/hero";
+import { HeartGate, HeartPnlCard } from "@/components/heart-pnl";
 import { MarketBoard } from "@/components/market";
 import { RoarChart } from "@/components/roar-chart";
 import { RoarFarm } from "@/components/roar-farm";
@@ -18,7 +18,6 @@ import {
   BoostPanel,
   Footer,
   PridePanel,
-  StatsStrip,
   TokenomicsPanel,
 } from "@/components/vault-panels";
 import {
@@ -40,6 +39,7 @@ import {
   getMarketSnapshot,
   getRoarFarm,
   getWalletHoldings,
+  getHeartBalance,
   prepareBuyTx,
   prepareBuyStakeTx,
   prepareClaimTx,
@@ -77,14 +77,22 @@ import {
 } from "@/lib/wallet";
 import { beginTxLane, finishTxLane, hideTxLane } from "@/lib/tx-lane";
 
+let livePaused = false;
+
 const LIVE = {
   staleTime: 8_000,
-  refetchInterval: 12_000,
-  refetchOnWindowFocus: true,
+  refetchInterval: () => (livePaused ? false : 12_000),
+  refetchOnWindowFocus: () => !livePaused,
   placeholderData: keepPreviousData,
 } as const;
 
 const EMPTY_FARM: FarmPosition = { staked: 0, pending: 0, unlocking: 0, slots: [] };
+
+function useEvent<A extends unknown[], R>(fn: (...args: A) => R): (...args: A) => R {
+  const ref = useRef(fn);
+  ref.current = fn;
+  return useCallback((...args: A) => ref.current(...args), []);
+}
 
 function collectDustFromBoard(board?: WalletBoard | null) {
   if (!board) return [];
@@ -104,14 +112,45 @@ function collectDustFromBoard(board?: WalletBoard | null) {
 
 async function waitForTx(txHash: string) {
   const started = Date.now();
-  while (Date.now() - started < 90_000) {
-    const done = await getTxStatus({ data: { txHash } });
-    if (done.status === "success" || done.status === "fail" || done.status === "invalid") {
-      return done;
+  let delay = 400;
+  while (Date.now() - started < 18_000) {
+    await new Promise((r) => setTimeout(r, delay));
+    try {
+      const done = await getTxStatus({ data: { txHash } });
+      if (done.status === "success" || done.status === "fail" || done.status === "invalid") {
+        return done;
+      }
+    } catch {
+      /* indexer lag / 429 — keep polling */
     }
-    await new Promise((r) => setTimeout(r, 280));
+    delay = Math.min(Math.round(delay * 1.25), 2_000);
   }
   return { txHash, status: "pending" as const, message: "Still pending on-chain" };
+}
+
+async function waitForHearts(address: string, minQty: number) {
+  const started = Date.now();
+  let delay = 700;
+  while (Date.now() - started < 50_000) {
+    await new Promise((r) => setTimeout(r, delay));
+    try {
+      const { hearts } = await getHeartBalance({ data: { address } });
+      if (hearts >= minQty) return;
+    } catch {
+      /* indexer lag */
+    }
+    delay = Math.min(Math.round(delay * 1.2), 2_500);
+  }
+  throw new Error("HEART_NOT_ARRIVED");
+}
+
+function txError(err: unknown, fallback: string, t: Copy) {
+  const raw = err instanceof Error ? err.message : "";
+  if (raw === "HEART_NOT_ARRIVED") return t.buyOkStakeLater;
+  if (/\b429\b/i.test(raw) || /too many requests/i.test(raw) || /rate.?limit/i.test(raw) || /network is busy/i.test(raw)) {
+    return t.rateLimited;
+  }
+  return raw || fallback;
 }
 
 function explorerAction(hash: string, label: string) {
@@ -146,12 +185,12 @@ async function toastTxResult(
   t: Copy,
 ) {
   finishTxLane();
-  await new Promise((r) => setTimeout(r, 720));
+  await new Promise((r) => setTimeout(r, 380));
   toast.success(done.status === "pending" ? t.txPending : ok, {
     id: loading,
     action: done.txHash ? explorerAction(done.txHash, t.explorer) : undefined,
   });
-  window.setTimeout(() => hideTxLane(), 480);
+  window.setTimeout(() => hideTxLane(), 280);
 }
 
 function stepLabel(data: string, t: (typeof copy)["fr"]) {
@@ -207,6 +246,8 @@ export function PrideApp() {
   const [signerReady, setSignerReady] = useState(false);
   const [walletChecked, setWalletChecked] = useState(false);
   const [section, setSection] = useState<AppSection>("heart");
+  const [heartPass, setHeartPass] = useState(false);
+  const [heartGate, setHeartGate] = useState<"locked" | "checking" | "denied">("locked");
   const [swapFocus, setSwapFocus] = useState<string | null>(null);
 
   useEffect(() => {
@@ -308,7 +349,7 @@ export function PrideApp() {
     queryFn: () => getWalletBoard({ data: { address: session!.address } }),
     enabled: Boolean(session && session.mode !== "demo" && session.address),
     staleTime: 10_000,
-    refetchInterval: 20_000,
+    refetchInterval: () => (livePaused ? false : 20_000),
     refetchOnWindowFocus: true,
     placeholderData: keepPreviousData,
   });
@@ -318,7 +359,7 @@ export function PrideApp() {
     queryFn: () => getDustPreview({ data: { address: session!.address } }),
     enabled: Boolean(session && session.mode !== "demo" && session.address),
     staleTime: 10_000,
-    refetchInterval: 20_000,
+    refetchInterval: () => (livePaused ? false : 20_000),
     refetchOnWindowFocus: true,
     placeholderData: keepPreviousData,
   });
@@ -366,10 +407,72 @@ export function PrideApp() {
     ).pending;
   }, [session, prideVaultStaked, now, pool, daily]);
 
+  const heartsHeld = (session?.heartsWallet ?? 0) + (session?.heartsStaked ?? 0);
+  const heartPnl =
+    session?.mode === "demo"
+      ? {
+          boughtQty: 5,
+          investedEgld: 5,
+          avgCostEgld: 1,
+          claimedRoar: session.claimedTotal,
+          pendingRoar: pending,
+          lots: [
+            { qty: 3, unitEgld: 1, costEgld: 3, at: Date.now() - 86400000 * 12, hash: "" },
+            { qty: 2, unitEgld: 1, costEgld: 2, at: Date.now() - 86400000 * 4, hash: "" },
+          ],
+        }
+      : walletLive.data?.pnl;
+
   useEffect(() => {
+    setHeartPass(false);
+    setHeartGate("locked");
+  }, [session?.address]);
+
+  useEffect(() => {
+    if (section !== "heart" && section !== "buy" && section !== "stats") return;
     const id = window.setInterval(() => setNow(Date.now()), 1_000);
     return () => window.clearInterval(id);
-  }, []);
+  }, [section]);
+
+  const verifyHeartPass = useCallback(async () => {
+    const sess = useVaultStore.getState().session;
+    if (!sess) {
+      setOpen(true);
+      return;
+    }
+    const held = (row?: { hearts?: number; heartsStaked?: number } | null) => {
+      const fromSess = (sess.heartsWallet ?? 0) + (sess.heartsStaked ?? 0);
+      const fromRow = row ? Number(row.hearts || 0) + Number(row.heartsStaked || 0) : 0;
+      return Math.max(fromSess, fromRow);
+    };
+    if (sess.mode === "demo" || held(walletLive.data) > 0) {
+      setHeartPass(true);
+      setHeartGate("locked");
+      return;
+    }
+    setHeartGate("checking");
+    try {
+      const fresh = await Promise.race([
+        walletLive.refetch(),
+        new Promise<never>((_, reject) => window.setTimeout(() => reject(new Error("timeout")), 2_000)),
+      ]);
+      if (held(fresh.data) > 0) {
+        setHeartPass(true);
+        setHeartGate("locked");
+        return;
+      }
+      setHeartPass(false);
+      setHeartGate("denied");
+    } catch {
+      if (held(walletLive.data) > 0) {
+        setHeartPass(true);
+        setHeartGate("locked");
+      } else {
+        setHeartPass(false);
+        setHeartGate("denied");
+      }
+    }
+  }, [walletLive]);
 
   const roarUsd = market.data?.roarPriceUsd || snapshot.data?.roarPriceUsd || 0.015;
   const egldUsd = market.data?.egldPriceUsd || snapshot.data?.egldPriceUsd || 4.15;
@@ -389,7 +492,18 @@ export function PrideApp() {
   );
 
   useEffect(() => {
-    if (inFlight) beginTxLane();
+    if (inFlight) {
+      beginTxLane();
+      return;
+    }
+    const hide = window.setTimeout(() => hideTxLane(), 900);
+    return () => window.clearTimeout(hide);
+  }, [inFlight]);
+  useEffect(() => {
+    livePaused = inFlight;
+    return () => {
+      livePaused = false;
+    };
   }, [inFlight]);
   const farmPosition = walletLive.data?.farm ?? EMPTY_FARM;
   const lastGoodBoard = useRef(walletBoard.data);
@@ -427,10 +541,48 @@ export function PrideApp() {
       ? demoWalletBoard(session, roarUsd, egldUsd, market.data?.floorEgld || 1)
       : (stableBoard ?? walletBoard.data);
 
-  function goSwap(tokenId?: string) {
+  const swapBalances = useMemo(() => {
+    const next: Record<string, number> = {
+      EGLD: session?.egldWallet ?? 0,
+      [TOKEN.identifier]: session?.roarWallet ?? 0,
+      [PAIRS.usdc]: walletLive.data?.usdc ?? 0,
+      [PAIRS.mex]: walletLive.data?.mex ?? 0,
+      [PAIRS.wegld]: walletLive.data?.wegld ?? 0,
+    };
+    for (const row of boardView?.tokens ?? []) next[row.id] = row.amount;
+    return next;
+  }, [
+    session?.egldWallet,
+    session?.roarWallet,
+    walletLive.data?.usdc,
+    walletLive.data?.mex,
+    walletLive.data?.wegld,
+    boardView?.tokens,
+  ]);
+
+  const dustTokens = useMemo(
+    () =>
+      session?.mode === "demo"
+        ? collectDustFromBoard(boardView)
+        : (dustPreview.data?.tokens ?? collectDustFromBoard(boardView)),
+    [session?.mode, boardView, dustPreview.data?.tokens],
+  );
+
+  const spendableEgld =
+    (session?.egldWallet ?? 0) + (session?.mode === "demo" ? 0 : (walletLive.data?.wegld ?? 0));
+
+  const goSwap = useCallback((tokenId?: string) => {
     if (tokenId) setSwapFocus(tokenId);
     window.location.hash = "swap";
-  }
+  }, []);
+
+  const openConnect = useCallback(() => setOpen(true), []);
+  const goHeart = useCallback(() => {
+    window.location.hash = "heart";
+  }, []);
+  const goFarm = useCallback(() => {
+    window.location.hash = "roar";
+  }, []);
 
   async function handleBuy(listing: MarketListing, quantity: number) {
     if (!canSign) {
@@ -439,7 +591,7 @@ export function PrideApp() {
       return;
     }
     const total = listing.priceEgld * quantity;
-    if (session && session.egldWallet + 1e-12 < total) {
+    if (session && spendableEgld + 1e-12 < total) {
       toast.error(t.needEgld, {
         action: { label: t.navSwap, onClick: () => goSwap() },
       });
@@ -450,19 +602,29 @@ export function PrideApp() {
     const loading = toast.loading(t.buying);
     try {
       const prepared = await prepareBuyTx({
-        data: { address: session!.address, auctionId: listing.auctionId, quantity },
+        data: {
+          address: session!.address,
+          auctionId: listing.auctionId,
+          quantity,
+          priceWei: listing.priceWei,
+          listingAmount: listing.amount,
+          priceEgld: listing.priceEgld,
+        },
       });
-      const signed = await signPreparedTx(prepared, {
+      const signed = await signPreparedTxs(prepared.txs, {
         title: t.signBuy,
-        steps: [`${t.buyNow} · ${formatNum(quantity, 0)} Heart`],
+        steps: prepared.txs.map((tx) => stepLabel(tx.data, t)),
       });
       toast.loading(t.broadcasting, { id: loading });
-      const { txHash } = await broadcastTx({ data: { tx: signed } });
+      let lastHash = "";
+      for (const tx of signed) {
+        const { txHash } = await broadcastTx({ data: { tx } });
+        lastHash = txHash;
+      }
       toast.loading(t.waitingTx, { id: loading });
-      const done = await waitForTx(txHash);
+      const done = await waitForTx(lastHash);
       throwIfTxFailed(done, t.buyError);
-      if (done.status === "success") await refreshLive();
-      else void refreshLive();
+      void refreshLive();
       await toastTxResult(
         done,
         loading,
@@ -471,8 +633,7 @@ export function PrideApp() {
       );
     } catch (err) {
       hideTxLane();
-      const message = err instanceof Error ? err.message : t.buyError;
-      toast.error(message, { id: loading });
+      toast.error(txError(err, t.buyError, t), { id: loading });
     } finally {
       setBuyingId(null);
       setBuyingStake(false);
@@ -486,7 +647,7 @@ export function PrideApp() {
       return;
     }
     const total = listing.priceEgld * quantity;
-    if (session && session.egldWallet + 1e-12 < total + CHAIN.buyStakeKeepEgld) {
+    if (session && spendableEgld + 1e-12 < total + CHAIN.buyStakeKeepEgld) {
       toast.error(t.needEgld, {
         action: { label: t.navSwap, onClick: () => goSwap() },
       });
@@ -497,27 +658,55 @@ export function PrideApp() {
     const loading = toast.loading(t.buyingStake);
     try {
       const prepared = await prepareBuyStakeTx({
-        data: { address: session!.address, auctionId: listing.auctionId, quantity },
+        data: {
+          address: session!.address,
+          auctionId: listing.auctionId,
+          quantity,
+          priceWei: listing.priceWei,
+          listingAmount: listing.amount,
+          priceEgld: listing.priceEgld,
+        },
       });
       const signed = await signPreparedTxs(prepared.txs, {
         title: t.signBuyStake,
-        steps: [`${t.buyNow} · ${formatNum(quantity, 0)} Heart`, t.stakeStep],
+        steps: prepared.txs.map((tx) => stepLabel(tx.data, t)),
       });
       toast.loading(t.broadcasting, { id: loading });
       let lastHash = "";
+      let buyHash = "";
       for (let i = 0; i < signed.length; i++) {
         const { txHash } = await broadcastTx({ data: { tx: signed[i] } });
         lastHash = txHash;
-        if (i < signed.length - 1) {
-          const mid = await waitForTx(txHash);
+        const fn = String(prepared.txs[i]?.data ?? "").split("@")[0] ?? "";
+        if (fn === "buy") buyHash = txHash;
+        if (i === signed.length - 1) break;
+        toast.loading(t.waitingTx, { id: loading });
+        const mid = await waitForTx(txHash);
+        if (fn === "buy") {
+          throwIfTxFailed(mid, t.buyError);
+          toast.loading(t.waitingHeart, { id: loading });
+          try {
+            await waitForHearts(session!.address, quantity);
+          } catch (err) {
+            if (err instanceof Error && err.message === "HEART_NOT_ARRIVED") {
+              hideTxLane();
+              toast.success(t.buyOkStakeLater, {
+                id: loading,
+                action: buyHash ? explorerAction(buyHash, t.explorer) : undefined,
+              });
+              void refreshLive();
+              return;
+            }
+            throw err;
+          }
+        } else {
           throwIfTxUnconfirmed(mid, t.txPendingMid, t.buyError);
         }
       }
       toast.loading(t.waitingTx, { id: loading });
       const done = await waitForTx(lastHash);
       throwIfTxFailed(done, t.buyError);
-      if (done.status === "success") await refreshLive();
-      else void refreshLive();
+      void refreshLive();
       await toastTxResult(
         done,
         loading,
@@ -526,8 +715,7 @@ export function PrideApp() {
       );
     } catch (err) {
       hideTxLane();
-      const message = err instanceof Error ? err.message : t.buyError;
-      toast.error(message, { id: loading });
+      toast.error(txError(err, t.buyError, t), { id: loading });
     } finally {
       setBuyingId(null);
       setBuyingStake(false);
@@ -561,8 +749,7 @@ export function PrideApp() {
       throwIfTxFailed(done, t.swapError);
       const outTicker = direction === "to-roar" ? "ROAR" : prepared.ticker;
       const inTicker = direction === "to-roar" ? prepared.ticker : "ROAR";
-      if (done.status === "success") await refreshLive();
-      else void refreshLive();
+      void refreshLive();
       await toastTxResult(
         done,
         loading,
@@ -658,8 +845,7 @@ export function PrideApp() {
       toast.loading(t.waitingTx, { id: loading });
       const done = await waitForTx(lastHash);
       throwIfTxFailed(done, t.restakeError);
-      if (done.status === "success") await refreshLive();
-      else void refreshLive();
+      void refreshLive();
       void roarFarm.refetch();
       await toastTxResult(
         done,
@@ -711,8 +897,7 @@ export function PrideApp() {
       toast.loading(t.waitingTx, { id: loading });
       const done = await waitForTx(txHash);
       throwIfTxFailed(done, t.farmError);
-      if (done.status === "success") await refreshLive();
-      else void refreshLive();
+      void refreshLive();
       void roarFarm.refetch();
       await toastTxResult(done, loading, t.farmSuccess, t);
     } catch (err) {
@@ -753,8 +938,7 @@ export function PrideApp() {
       toast.loading(t.waitingTx, { id: loading });
       const done = await waitForTx(lastHash);
       throwIfTxFailed(done, t.farmError);
-      if (done.status === "success") await refreshLive();
-      else void refreshLive();
+      void refreshLive();
       void roarFarm.refetch();
       await toastTxResult(
         done,
@@ -804,8 +988,7 @@ export function PrideApp() {
       toast.loading(t.waitingTx, { id: loading });
       const done = await waitForTx(lastHash);
       throwIfTxFailed(done, t.dustError);
-      if (done.status === "success") await refreshLive();
-      else void refreshLive();
+      void refreshLive();
       await toastTxResult(
         done,
         loading,
@@ -844,7 +1027,7 @@ export function PrideApp() {
       return;
     }
     setDelegating(kind);
-    const loading = toast.loading(t.staking);
+    const loading = toast.loading(t.preparing);
     try {
       const prepared = await prepareDelegationTx({
         data: {
@@ -864,6 +1047,7 @@ export function PrideApp() {
               : kind === "unstake"
                 ? t.signDelegationUnstake
                 : t.signDelegationWithdraw;
+      toast.loading(t.staking, { id: loading });
       const signed = await signPreparedTxs(prepared.txs, {
         title,
         steps: prepared.txs.map((tx) => stepLabel(tx.data, t)),
@@ -881,8 +1065,7 @@ export function PrideApp() {
       toast.loading(t.waitingTx, { id: loading });
       const done = await waitForTx(lastHash);
       throwIfTxFailed(done, t.delegationError);
-      if (done.status === "success") await refreshLive();
-      else void refreshLive();
+      void refreshLive();
       await toastTxResult(
         done,
         loading,
@@ -931,8 +1114,7 @@ export function PrideApp() {
       toast.loading(t.waitingTx, { id: loading });
       const done = await waitForTx(lastHash);
       throwIfTxFailed(done, t.walletSendError);
-      if (done.status === "success") await refreshLive();
-      else void refreshLive();
+      void refreshLive();
       await toastTxResult(
         done,
         loading,
@@ -1015,8 +1197,7 @@ export function PrideApp() {
       toast.loading(t.waitingTx, { id: loading });
       const done = await waitForTx(lastHash);
       throwIfTxFailed(done, t.burnifyError);
-      if (done.status === "success") await refreshLive();
-      else void refreshLive();
+      void refreshLive();
       const qty =
         prepared.ticker === "EGLD"
           ? `${formatNum(prepared.amount, 4)} EGLD`
@@ -1030,6 +1211,28 @@ export function PrideApp() {
       setBurnifying(null);
     }
   }
+
+  const sendFn = useRef(handleSend);
+  sendFn.current = handleSend;
+  const sendRoar = useCallback((to: string, amount: number) => {
+    return sendFn.current(TOKEN.identifier, to, amount);
+  }, []);
+  const onSwapDesk = useEvent(handleSwap);
+  const onDustConvert = useEvent(handleDustConvert);
+  const onWalletSend = useEvent(handleSend);
+  const onDelegationAct = useEvent(handleDelegation);
+  const onBurnifyAct = useEvent(handleBurnify);
+  const onRoarFarmAct = useEvent(handleRoarFarm);
+  const onSwapStakeAct = useEvent(handleSwapStake);
+  const onHeartStake = useEvent((n: number) => handleHeartFarm("stake", n));
+  const onHeartUnstake = useEvent((n: number) => handleHeartFarm("unstake", n));
+  const onHeartClaim = useEvent(() => handleHeartFarm("claim", 0));
+  const onHeartRestake = useEvent(handleHeartRestake);
+  const onBuyAct = useEvent(handleBuy);
+  const onBuyStakeAct = useEvent(handleBuyStake);
+  const retryBoard = useCallback(() => {
+    void walletBoard.refetch();
+  }, [walletBoard.refetch]);
 
   async function refreshLive() {
     if (!session?.address || session.mode === "demo") return;
@@ -1061,11 +1264,11 @@ export function PrideApp() {
       sessionLost={sessionLost}
       buyingId={buyingId}
       buyingStake={buyingStake}
-      egldWallet={session?.egldWallet ?? 0}
-      onBuy={(listing, qty) => void handleBuy(listing, qty)}
-      onBuyStake={(listing, qty) => void handleBuyStake(listing, qty)}
-      onConnect={() => setOpen(true)}
-      onNeedSwap={() => goSwap()}
+      egldWallet={spendableEgld}
+      onBuy={onBuyAct}
+      onBuyStake={onBuyStakeAct}
+      onConnect={openConnect}
+      onNeedSwap={goSwap}
       pane={pane}
     />
   );
@@ -1075,57 +1278,61 @@ export function PrideApp() {
       <div className="sticky top-0 z-40 bg-bg pt-[env(safe-area-inset-top)]">
         <Header
           t={t}
-          onConnect={() => setOpen(true)}
+          onConnect={openConnect}
           signerReady={signerReady}
           sessionLost={sessionLost}
-          onSendRoar={(to, amount) => handleSend(TOKEN.identifier, to, amount)}
+          onSendRoar={sendRoar}
         />
         <SectionNav t={t} section={section} />
       </div>
       <main className="min-h-[calc(100dvh-9rem)]">
         {section === "heart" ? (
-          <Hero
-            t={t}
-            listed={listed}
-            ooxStaked={ooxStaked}
-            inWallets={inWallets}
-            onConnect={() => setOpen(true)}
-            connected={Boolean(session)}
-          />
-        ) : null}
-
-        {section === "heart" ? (
-          <>
-            <div className="pt-6">
-              <StatsStrip
-                t={t}
-                staked={prideVaultStaked}
-                listed={listed}
-                ooxStaked={ooxStaked}
-                inWallets={inWallets}
-                holderCount={walletHolders}
-                pool={pool}
-                daily={daily}
-                apr={apr}
-              />
-            </div>
-            <StakeDesk
+          heartPass && session ? (
+            <section className="mx-auto max-w-xl px-4 py-10">
+              <article className="relative overflow-hidden rounded-xl bg-surface p-6 shadow-[var(--shadow-border)] sm:p-10">
+                <div className="pointer-events-none absolute inset-x-0 top-0 h-0.5 dual-bar" />
+                <HeartPnlCard
+                  t={t}
+                  lang={lang}
+                  pnl={heartPnl}
+                  heartsWallet={session.heartsWallet}
+                  heartsStaked={session.heartsStaked}
+                  pending={pending}
+                  markEgld={market.data?.avgSaleEgld || market.data?.lastSaleEgld || 0}
+                  egldUsd={egldUsd}
+                  roarUsd={roarUsd}
+                  dailyPerNft={daily}
+                  farmHearts={ooxStaked}
+                  egldStakeApr={market.data?.egldStakeApr || 7}
+                  poolRoar={pool}
+                />
+                <StakeDesk
+                  t={t}
+                  session={session}
+                  vaultStaked={prideVaultStaked}
+                  pending={pending}
+                  poolRoar={pool}
+                  dailyPerNft={daily}
+                  canSign={canSign}
+                  sessionLost={sessionLost}
+                  busy={staking}
+                  onConnect={openConnect}
+                  onStake={onHeartStake}
+                  onUnstake={onHeartUnstake}
+                  onClaim={onHeartClaim}
+                  onRestake={onHeartRestake}
+                />
+              </article>
+            </section>
+          ) : (
+            <HeartGate
               t={t}
-              session={session}
-              vaultStaked={prideVaultStaked}
-              pending={pending}
-              poolRoar={pool}
-              dailyPerNft={daily}
-              canSign={canSign}
-              sessionLost={sessionLost}
-              busy={staking}
-              onConnect={() => setOpen(true)}
-              onStake={(n) => void handleHeartFarm("stake", n)}
-              onUnstake={(n) => void handleHeartFarm("unstake", n)}
-              onClaim={() => void handleHeartFarm("claim", 0)}
-              onRestake={() => void handleHeartRestake()}
+              status={heartGate}
+              connected={Boolean(session)}
+              onVerify={() => void verifyHeartPass()}
+              onConnect={openConnect}
             />
-          </>
+          )
         ) : null}
 
         {section === "buy" ? marketBoard("buy") : null}
@@ -1138,20 +1345,16 @@ export function PrideApp() {
             fetching={walletBoard.isFetching}
             loading={!boardView && walletBoard.isFetching}
             error={walletBoard.isError && !boardView}
-            onRetry={() => void walletBoard.refetch()}
-            onConnect={() => setOpen(true)}
+            onRetry={retryBoard}
+            onConnect={openConnect}
             onSwap={goSwap}
-            onSend={(tokenId, to, amount) => void handleSend(tokenId, to, amount)}
-            onHeart={() => {
-              window.location.hash = "heart";
-            }}
-            onFarm={() => {
-              window.location.hash = "roar";
-            }}
+            onSend={onWalletSend}
+            onHeart={goHeart}
+            onFarm={goFarm}
             canSign={canSign}
             busy={delegating ?? burnifying}
-            onDelegation={(kind, contract, amount) => void handleDelegation(kind, contract, amount)}
-            onBurnify={(kind, amount) => void handleBurnify(kind, amount)}
+            onDelegation={onDelegationAct}
+            onBurnify={onBurnifyAct}
             egldUsd={egldUsd}
           />
         ) : null}
@@ -1161,27 +1364,16 @@ export function PrideApp() {
             t={t}
             canSign={canSign}
             sessionLost={sessionLost}
-            balances={{
-              EGLD: session?.egldWallet ?? 0,
-              [TOKEN.identifier]: session?.roarWallet ?? 0,
-              [PAIRS.usdc]: walletLive.data?.usdc ?? 0,
-              [PAIRS.mex]: walletLive.data?.mex ?? 0,
-              [PAIRS.wegld]: walletLive.data?.wegld ?? 0,
-              ...Object.fromEntries((boardView?.tokens ?? []).map((row) => [row.id, row.amount])),
-            }}
+            balances={swapBalances}
             roarUsd={roarUsd}
             busy={swapping}
             dustBusy={dusting}
             dustLoading={session?.mode !== "demo" && dustPreview.isPending && !dustPreview.data}
-            dustTokens={
-              session?.mode === "demo"
-                ? collectDustFromBoard(boardView)
-                : dustPreview.data?.tokens ?? collectDustFromBoard(boardView)
-            }
+            dustTokens={dustTokens}
             focusToken={swapFocus}
-            onSwap={(tokenId, direction, amount) => void handleSwap(tokenId, direction, amount)}
-            onDust={(ids) => void handleDustConvert(ids)}
-            onConnect={() => setOpen(true)}
+            onSwap={onSwapDesk}
+            onDust={onDustConvert}
+            onConnect={openConnect}
           />
         ) : null}
 
@@ -1196,9 +1388,9 @@ export function PrideApp() {
             sessionLost={sessionLost}
             busy={farming}
             swapStakeBusy={swapStaking}
-            onFarm={(kind, amount) => void handleRoarFarm(kind, amount)}
-            onSwapStake={(amount) => void handleSwapStake(amount)}
-            onConnect={() => setOpen(true)}
+            onFarm={onRoarFarmAct}
+            onSwapStake={onSwapStakeAct}
+            onConnect={openConnect}
           />
         ) : null}
 

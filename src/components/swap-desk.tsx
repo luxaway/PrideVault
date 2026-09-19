@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowDownUp, Check, ChevronsUpDown, Lock, Loader2, Search } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
@@ -24,7 +24,7 @@ import { quoteFromAggRate, quoteFromPool, type PoolQuote } from "@/lib/swap-math
 import { useVaultStore } from "@/lib/store";
 import { cn, formatEgld, formatNum, isTokenId } from "@/lib/utils";
 
-export function SwapDesk({
+export const SwapDesk = memo(function SwapDesk({
   t,
   canSign,
   sessionLost,
@@ -128,8 +128,12 @@ export function SwapDesk({
   const fromBal = toRoar ? otherBal : roarBal;
   const toBal = toRoar ? roarBal : otherBal;
   const maxFrom = toRoar && token.wrap ? Math.max(0, fromBal - swapEgldKeep()) : fromBal;
+  // Quote the typed amount even with no wallet / zero EGLD (pool can still price).
+  // Clamp to maxFrom only when actually spending / signing.
+  const quoteSpend = valid && Number.isFinite(amount) && amount > 0 ? amount : 0;
   const spend = valid ? (toRoar && token.wrap ? Math.min(amount, maxFrom) : amount) : 0;
   const spendOk = spend > 0 && Number.isFinite(spend);
+  const quoteOk = quoteSpend > 0;
 
   const locked = busy || dustBusy;
   const slippage = useVaultStore((s) => s.slippage);
@@ -169,16 +173,16 @@ export function SwapDesk({
   }, [balances, queryClient]);
 
   const q: PoolQuote | undefined = useMemo(() => {
-    if (!spendOk) return undefined;
+    if (!quoteOk) return undefined;
     if (usePool) {
       const row = pool.data;
       if (!row || row.tokenId !== "EGLD") return undefined;
-      return quoteFromPool(row, direction, spend, slippage) ?? undefined;
+      return quoteFromPool(row, direction, quoteSpend, slippage) ?? undefined;
     }
     const row = agg.data;
     if (!row || row.tokenId !== token.id) return undefined;
-    return quoteFromAggRate(row, direction, spend, slippage) ?? undefined;
-  }, [spendOk, usePool, pool.data, agg.data, token.id, direction, spend, slippage]);
+    return quoteFromAggRate(row, direction, quoteSpend, slippage) ?? undefined;
+  }, [quoteOk, usePool, pool.data, agg.data, token.id, direction, quoteSpend, slippage]);
   const quoteBusy = usePool ? pool.isFetching && !q : agg.isFetching && !q;
   const quoteErr = usePool ? pool.isError : agg.isError;
   const quoteErrMsg = usePool
@@ -228,16 +232,18 @@ export function SwapDesk({
     const wallet = matched.filter((row) => walletSet.has(row.id) || (row.id === "EGLD" && walletSet.has("EGLD")));
     const rest = matched.filter((row) => !wallet.includes(row));
     wallet.sort((a, b) => (balances[b.id] ?? 0) - (balances[a.id] ?? 0));
-    const visible = qn ? [...wallet, ...rest] : [...wallet, ...rest.slice(0, 80)];
-    return { wallet, rest, visible };
+    return { wallet, rest };
   }, [tokens, query, walletSet, balances]);
 
-  function pickToken(row: SwapCatalogToken) {
-    setTokenId(row.id);
-    setRaw(defaultAmt(row, balances[row.id] ?? 0));
-    setPickOpen(false);
-    setQuery("");
-  }
+  const pickToken = useCallback(
+    (row: SwapCatalogToken) => {
+      setTokenId(row.id);
+      setRaw(defaultAmt(row, balances[row.id] ?? 0));
+      setPickOpen(false);
+      setQuery("");
+    },
+    [balances],
+  );
 
   const routeLabel = !q
     ? "…"
@@ -266,7 +272,10 @@ export function SwapDesk({
             value={raw}
             onChange={setRaw}
             balance={fromBal}
-            onMax={() => setRaw(fromBal > 0 ? trimAmt(fromBal, Math.max(fromDigits, 6)) : "0")}
+            onMax={() => {
+              const max = toRoar && token.wrap ? maxFrom : fromBal;
+              setRaw(max > 0 ? trimAmt(max, Math.max(fromDigits, 6)) : "0");
+            }}
             maxLabel={t.swapMax}
             locked={!toRoar}
             lockedLabel={t.swapLocked}
@@ -523,59 +532,18 @@ export function SwapDesk({
               autoFocus
             />
           </div>
-          <div className="min-h-0 max-h-[22rem] overflow-y-auto">
-            {filtered.visible.length === 0 ? (
+          <div className="min-h-0 max-h-[22rem] overflow-hidden">
+            {filtered.wallet.length === 0 && filtered.rest.length === 0 ? (
               <p className="py-6 text-center text-sm text-muted">{t.swapNoMatch}</p>
             ) : (
-              <ul className="grid gap-1">
-                {filtered.visible.map((row, i) => {
-                  const active = row.id === token.id;
-                  const bal = balances[row.id] ?? 0;
-                  const showWalletHead =
-                    i === 0 && filtered.wallet.length > 0 && filtered.wallet.includes(row);
-                  const showAllHead =
-                    filtered.wallet.length > 0 &&
-                    row === filtered.rest[0] &&
-                    filtered.visible.includes(row);
-                  return (
-                    <li key={row.id}>
-                      {showWalletHead ? (
-                        <p className="px-3 pb-1 pt-2 text-[11px] font-medium text-muted">
-                          {t.swapWalletOnly}
-                        </p>
-                      ) : null}
-                      {showAllHead ? (
-                        <p className="px-3 pb-1 pt-3 text-[11px] font-medium text-muted">
-                          {t.swapAllTokens}
-                        </p>
-                      ) : null}
-                      <button
-                        type="button"
-                        onClick={() => pickToken(row)}
-                        className={cn(
-                          "flex h-14 w-full items-center gap-3 rounded-lg px-3 text-left transition-colors duration-150",
-                          active ? "bg-ember/15" : "hover:bg-surface-2",
-                        )}
-                      >
-                        <TokenIcon src={row.icon} ticker={row.ticker} className="size-8" />
-                        <div className="min-w-0 flex-1">
-                          <p className="text-sm font-medium">{row.ticker}</p>
-                          <p className="truncate text-[11px] text-muted">
-                            {row.id === "EGLD" ? row.name : t.swapVenueAgg}
-                          </p>
-                        </div>
-                        <div className="text-right">
-                          <p className="tabular text-sm font-medium">
-                            {formatNum(bal, row.ticker === "USDC" ? 2 : 4)}
-                          </p>
-                          <p className="text-[11px] text-muted">{t.inWallet}</p>
-                        </div>
-                        {active ? <Check className="size-4 text-ember" /> : <span className="size-4" />}
-                      </button>
-                    </li>
-                  );
-                })}
-              </ul>
+              <TokenPickList
+                wallet={filtered.wallet}
+                rest={filtered.rest}
+                tokenId={token.id}
+                balances={balances}
+                t={t}
+                onPick={pickToken}
+              />
             )}
           </div>
           <p className="inline-flex items-center gap-2 text-[11px] text-muted">
@@ -586,7 +554,7 @@ export function SwapDesk({
       </Dialog>
     </section>
   );
-}
+});
 
 export function SlippageToggle({ t }: { t: Copy }) {
   const slippage = useVaultStore((s) => s.slippage);
@@ -664,7 +632,130 @@ function defaultAmt(row: SwapCatalogToken, bal: number) {
   return "1";
 }
 
-function TokenIcon({
+const PICK_ROW = 56;
+
+const TokenPickRow = memo(function TokenPickRow({
+  row,
+  active,
+  bal,
+  t,
+  onPick,
+}: {
+  row: SwapCatalogToken;
+  active: boolean;
+  bal: number;
+  t: Copy;
+  onPick: (row: SwapCatalogToken) => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={() => onPick(row)}
+      className={cn(
+        "flex h-14 w-full items-center gap-3 rounded-lg px-3 text-left transition-colors duration-150",
+        active ? "bg-ember/15" : "hover:bg-surface-2",
+      )}
+    >
+      <TokenIcon src={row.icon} ticker={row.ticker} className="size-8" />
+      <div className="min-w-0 flex-1">
+        <p className="text-sm font-medium">{row.ticker}</p>
+        <p className="truncate text-[11px] text-muted">
+          {row.id === "EGLD" ? row.name : t.swapVenueAgg}
+        </p>
+      </div>
+      <div className="text-right">
+        <p className="tabular text-sm font-medium">
+          {formatNum(bal, row.ticker === "USDC" ? 2 : 4)}
+        </p>
+        <p className="text-[11px] text-muted">{t.inWallet}</p>
+      </div>
+      {active ? <Check className="size-4 text-ember" /> : <span className="size-4" />}
+    </button>
+  );
+});
+
+const TokenPickList = memo(function TokenPickList({
+  wallet,
+  rest,
+  tokenId,
+  balances,
+  t,
+  onPick,
+}: {
+  wallet: SwapCatalogToken[];
+  rest: SwapCatalogToken[];
+  tokenId: string;
+  balances: Record<string, number>;
+  t: Copy;
+  onPick: (row: SwapCatalogToken) => void;
+}) {
+  const scroller = useRef<HTMLDivElement>(null);
+  const [top, setTop] = useState(0);
+  const [vh, setVh] = useState(352);
+  useEffect(() => {
+    const el = scroller.current;
+    if (!el) return;
+    const sync = () => {
+      setTop(el.scrollTop);
+      setVh(el.clientHeight);
+    };
+    sync();
+    el.addEventListener("scroll", sync, { passive: true });
+    return () => el.removeEventListener("scroll", sync);
+  }, [wallet.length, rest.length]);
+
+  const start = Math.max(0, Math.floor(top / PICK_ROW) - 6);
+  const end = Math.min(rest.length, Math.ceil((top + vh) / PICK_ROW) + 8);
+  const slice = rest.slice(start, end);
+
+  return (
+    <div ref={scroller} className="max-h-[22rem] overflow-y-auto overscroll-contain">
+      {wallet.length > 0 ? (
+        <div>
+          <p className="px-3 pb-1 pt-2 text-[11px] font-medium text-muted">{t.swapWalletOnly}</p>
+          <ul>
+            {wallet.map((row) => (
+              <li key={row.id}>
+                <TokenPickRow
+                  row={row}
+                  active={row.id === tokenId}
+                  bal={balances[row.id] ?? 0}
+                  t={t}
+                  onPick={onPick}
+                />
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+      {rest.length > 0 ? (
+        <p className="px-3 pb-1 pt-3 text-[11px] font-medium text-muted">{t.swapAllTokens}</p>
+      ) : null}
+      <div style={{ height: rest.length * PICK_ROW, position: "relative" }}>
+        {slice.map((row, i) => {
+          const index = start + i;
+          return (
+            <div
+              key={row.id}
+              className="absolute right-0 left-0"
+              style={{ top: index * PICK_ROW, height: PICK_ROW }}
+            >
+              <TokenPickRow
+                row={row}
+                active={row.id === tokenId}
+                bal={balances[row.id] ?? 0}
+                t={t}
+                onPick={onPick}
+              />
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+});
+
+const TokenIcon = memo(function TokenIcon({
   src,
   ticker,
   className,
@@ -690,11 +781,13 @@ function TokenIcon({
     <img
       src={src}
       alt=""
+      loading="lazy"
+      decoding="async"
       className={cn("size-5 rounded-full object-cover", className)}
       onError={() => setFailed(true)}
     />
   );
-}
+});
 
 function TokenField({
   label,

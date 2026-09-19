@@ -82,7 +82,7 @@ export const CHAIN = {
   burnifyClaimGasLimit: 50_000_000,
   burnifyNftBaseGasLimit: 20_000_000,
   burnifyNftExtraGasLimit: 10_000_000,
-  buyStakeKeepEgld: 0.08,
+  buyStakeKeepEgld: 0.055,
   guardedExtraGas: 50_000,
   txVersion: 2,
   guardedOptions: 2,
@@ -362,6 +362,9 @@ export const VAULT = {
   poolRoar: 10_000,
   poolStart: 1_788_533_192_000,
   poolEnd: 1_820_673_900_000,
+  /** Mint treasury staked on-chain. 70% of staking rewards → weekly ROAR buyback into the farm. */
+  egldStaked: 1_250,
+  buybackDays: 7,
   splitVault: 0.7,
   splitBurn: 0.1,
   splitLiquidity: 0.2,

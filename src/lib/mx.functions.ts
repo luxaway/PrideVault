@@ -68,7 +68,22 @@ import { fromDenom, isErdAddress, isTokenId } from "./utils";
 import { accruePending, dailyFromPool } from "./vault";
 import type { HistoryItem } from "./store";
 
-export type HolderKind = "market" | "ooxStake" | "holder";
+export type HeartPnlLot = {
+  qty: number;
+  unitEgld: number;
+  costEgld: number;
+  at: number;
+  hash: string;
+};
+
+export type HeartPnl = {
+  boughtQty: number;
+  investedEgld: number;
+  avgCostEgld: number;
+  claimedRoar: number;
+  pendingRoar: number;
+  lots: HeartPnlLot[];
+};
 
 export type HolderRow = {
   address: string;
@@ -310,6 +325,7 @@ export type MarketListing = {
   amount: number;
   priceEgld: number;
   priceUsd: number;
+  priceWei?: string;
   auctionType?: string;
   thumbnail?: string;
 };
@@ -345,6 +361,8 @@ export type MarketSnapshot = {
   lastSaleQty: number;
   lastSaleAt: number;
   lastSaleHash: string;
+  avgSaleEgld: number;
+  avgSaleCount: number;
   heartHolders: number;
   heartTransfers: number;
   ooxStaked: number;
@@ -364,6 +382,7 @@ export type MarketSnapshot = {
   activity: HeartActivity[];
   poolRoar: number;
   dailyPerNft: number;
+  egldStakeApr: number;
   fetchedAt: number;
 };
 
@@ -451,7 +470,7 @@ async function getJson(url, extraHeaders, timeout = 12e3) {
 			});
 			if (res.status === 429) {
 				const ra = Number(res.headers.get("retry-after"));
-				await sleep((Number.isFinite(ra) && ra > 0 ? ra * 1e3 : 450 * (attempt + 1)) + Math.random() * 250);
+				await sleep((Number.isFinite(ra) && ra > 0 ? ra * 1e3 : 800 * (attempt + 1)) + Math.random() * 400);
 				continue;
 			}
 			if (!res.ok) {
@@ -903,6 +922,60 @@ async function readOoxFarm() {
 function isFarm41(decoded, fn) {
 	const parts = decoded.split("@");
 	return parts[0] === fn && parts[1]?.toLowerCase() === VAULT.ooxFarmId.toString(16);
+}
+function transferAtomic(row) {
+	const t = row?.action?.arguments?.transfers?.[0];
+	if (t?.value != null) return String(t.value);
+	if (row?.value != null && row.value !== "0") return String(row.value);
+	return "0";
+}
+function roarFromStaking(row) {
+	const t = row?.action?.arguments?.transfers?.[0];
+	const id = t?.identifier || t?.token || row?.token || "";
+	if (id && id !== TOKEN.identifier && !String(id).startsWith("ROAR-")) return 0;
+	const dec = t?.decimals ?? TOKEN.decimals;
+	try {
+		return fromAtomic(transferAtomic(row), dec);
+	} catch {
+		return 0;
+	}
+}
+function summarizeHeartBuys(buys) {
+	const lots = [];
+	let boughtQty = 0;
+	let investedEgld = 0;
+	for (const tx of buys ?? []) {
+		const decoded = decodeB64(tx.data);
+		if (!isHeartBuy(decoded)) continue;
+		const qty = parseBuyQty(decoded);
+		if (qty <= 0) continue;
+		const costEgld = fromDenom(tx.value, 18);
+		if (costEgld <= 0) continue;
+		boughtQty += qty;
+		investedEgld += costEgld;
+		lots.push({
+			qty,
+			unitEgld: costEgld / qty,
+			costEgld,
+			at: (tx.timestamp ?? 0) * 1e3,
+			hash: tx.txHash ?? ""
+		});
+	}
+	lots.sort((a, b) => b.at - a.at);
+	return {
+		boughtQty,
+		investedEgld,
+		avgCostEgld: boughtQty > 0 ? investedEgld / boughtQty : 0,
+		lots: lots.slice(0, 8)
+	};
+}
+function sumClaimedRoar(rows) {
+	let claimed = 0;
+	for (const row of rows ?? []) {
+		const amt = roarFromStaking(row);
+		if (amt > 0) claimed += amt;
+	}
+	return claimed;
 }
 function transferQty(row) {
 	return Number(row.action?.arguments?.transfers?.[0]?.value ?? 0);
@@ -1360,13 +1433,15 @@ export const getWalletHoldings = createServerFn({ method: "POST" }).validator((d
 	return { address };
 }).handler(async ({ data }) => {
 	const { address } = data;
-	const [nfts, token, account, extra, position, farm] = await Promise.all([
+	const [nfts, token, account, extra, position, farm, buys, roarIn] = await Promise.all([
 		mx(`/accounts/${address}/nfts?collections=${COLLECTION.identifier}&size=10`),
 		mx(`/accounts/${address}/tokens/${TOKEN.identifier}`),
 		mx(`/accounts/${address}?withGuardianInfo=true`),
 		mx(`/accounts/${address}/tokens?identifiers=${PAIRS.wegld},${PAIRS.usdc},${PAIRS.mex}&size=10`),
 		readOoxPosition(address),
-		readFarmPosition(address)
+		readFarmPosition(address),
+		mx(`/accounts/${address}/transactions?receiver=${ADDRESSES.marketplace}&function=buy&status=success&size=100`),
+		mx(`/accounts/${address}/transfers?token=${TOKEN.identifier}&sender=${ADDRESSES.ooxStaking}&size=50`)
 	]);
 	const heart = (nfts ?? []).find((n) => n.identifier === COLLECTION.sftId);
 	const roar = fromAtomic(token?.balance ?? "0", token?.decimals ?? TOKEN.decimals);
@@ -1375,6 +1450,7 @@ export const getWalletHoldings = createServerFn({ method: "POST" }).validator((d
 		if (!row?.balance) return 0;
 		return fromAtomic(row.balance, row.decimals ?? dec);
 	};
+	const buySum = summarizeHeartBuys(buys);
 	return {
 		address,
 		hearts: Number(heart?.balance ?? 0),
@@ -1389,8 +1465,25 @@ export const getWalletHoldings = createServerFn({ method: "POST" }).validator((d
 		pendingRoar: position.pendingRoar,
 		lastTick: position.lastClaimAt || Date.now(),
 		history: position.history as HistoryItem[],
-		farm
+		farm,
+		pnl: {
+			boughtQty: buySum.boughtQty,
+			investedEgld: buySum.investedEgld,
+			avgCostEgld: buySum.avgCostEgld,
+			claimedRoar: sumClaimedRoar(roarIn),
+			pendingRoar: position.pendingRoar,
+			lots: buySum.lots
+		}
 	};
+});
+export const getHeartBalance = createServerFn({ method: "POST" }).validator((data) => {
+	const address = data.address.trim();
+	if (!isErdAddress(address)) throw new Error("Invalid address");
+	return { address };
+}).handler(async ({ data }) => {
+	const nfts = await mxDirect(`/accounts/${data.address}/nfts?collections=${COLLECTION.identifier}&size=10`, 4e3);
+	const heart = (nfts ?? []).find((n) => n.identifier === COLLECTION.sftId);
+	return { hearts: Number(heart?.balance ?? 0) };
 });
 async function readOoxStakeLite(address) {
 	try {
@@ -2550,7 +2643,7 @@ export const getWalletBoard = createServerFn({ method: "POST" }).validator((data
 	};
 });
 export const getMarketSnapshot = createServerFn({ method: "GET" }).handler(async () => {
-	const [ooxNfts, token, mex, pairs, transfers, transferCount, accounts, buyTxs, wegld, farm] = await Promise.all([
+	const [ooxNfts, token, mex, pairs, transfers, transferCount, accounts, buyTxs, wegld, farm, economics] = await Promise.all([
 		getJson(`${OOX}/collections/${COLLECTION.identifier}/nfts?size=40`),
 		mx(`/tokens/${TOKEN.identifier}`),
 		mx(`/mex/tokens/${TOKEN.identifier}`),
@@ -2558,9 +2651,10 @@ export const getMarketSnapshot = createServerFn({ method: "GET" }).handler(async
 		mx(`/nfts/${COLLECTION.sftId}/transfers?size=20`),
 		mx(`/nfts/${COLLECTION.sftId}/transfers/count`),
 		mx(`/nfts/${COLLECTION.sftId}/accounts?size=50`),
-		mx(`/accounts/${ADDRESSES.marketplace}/transactions?function=buy&status=success&size=12`),
+		mx(`/accounts/${ADDRESSES.marketplace}/transactions?function=buy&status=success&size=25`),
 		mx(`/mex/tokens/${PAIRS.wegld}`),
-		readOoxFarm()
+		readOoxFarm(),
+		mxDirect("/economics", 3e3)
 	]);
 	const cleanListings = mapListings(ooxNfts);
 	const floorEgld = cleanListings[0]?.priceEgld ?? 0;
@@ -2574,6 +2668,18 @@ export const getMarketSnapshot = createServerFn({ method: "GET" }).handler(async
 	const lastSaleEgld = lastBuy ? lastSaleQty > 0 ? fromDenom(lastBuy.value, 18) / lastSaleQty : fromDenom(lastBuy.value, 18) : 0;
 	const lastSaleAt = lastBuy?.timestamp ?? 0;
 	const lastSaleHash = lastBuy?.txHash ?? "";
+	let avgSaleQty = 0;
+	let avgSaleEgldSum = 0;
+	let avgSaleCount = 0;
+	for (const tx of heartBuys) {
+		const q = parseBuyQty(decodeB64(tx.data));
+		const v = fromDenom(tx.value, 18);
+		if (q <= 0 || v <= 0) continue;
+		avgSaleQty += q;
+		avgSaleEgldSum += v;
+		avgSaleCount += 1;
+	}
+	const avgSaleEgld = avgSaleQty > 0 ? avgSaleEgldSum / avgSaleQty : lastSaleEgld;
 	const roarPriceUsd = mex?.price || token?.price || .015;
 	const roarPrev24h = mex?.previous24hPrice || 0;
 	const roarChange24h = roarPrev24h > 0 ? (roarPriceUsd - roarPrev24h) / roarPrev24h * 100 : 0;
@@ -2643,6 +2749,8 @@ export const getMarketSnapshot = createServerFn({ method: "GET" }).handler(async
 		lastSaleQty,
 		lastSaleAt,
 		lastSaleHash,
+		avgSaleEgld,
+		avgSaleCount,
 		heartHolders: split.walletHolderCount,
 		heartTransfers: typeof transferCount === "number" ? transferCount : 0,
 		ooxStaked: farm.staked > 0 ? farm.staked : split.ooxStaked,
@@ -2662,6 +2770,11 @@ export const getMarketSnapshot = createServerFn({ method: "GET" }).handler(async
 		activity: activity.slice(0, 10),
 		poolRoar: farm.remaining || farm.totalPool,
 		dailyPerNft: farm.dailyPerNft,
+		egldStakeApr: (() => {
+			const raw = Number(economics?.apr ?? economics?.Apr ?? 0);
+			if (!Number.isFinite(raw) || raw <= 0) return 7;
+			return raw > 1 ? raw : raw * 100;
+		})(),
 		fetchedAt: Date.now()
 	};
 });
@@ -2678,97 +2791,178 @@ function withAccountGuard(base, account) {
 		} : {}
 	};
 }
-export const prepareBuyTx = createServerFn({ method: "POST" }).validator((data) => {
-	const address = data.address.trim();
-	const auctionId = Number(data.auctionId);
-	const quantity = Math.floor(Number(data.quantity));
-	if (!isErdAddress(address)) throw new Error("Invalid address");
-	if (!Number.isFinite(auctionId) || auctionId <= 0) throw new Error("Invalid auction");
-	if (!Number.isFinite(quantity) || quantity <= 0) throw new Error("Invalid quantity");
-	return {
-		address,
-		auctionId,
-		quantity
+function gasWei(limit) {
+	return BigInt(limit) * BigInt(CHAIN.gasPrice);
+}
+function listingWei(fromOox, clientWei, fallbackEgld) {
+	const raw = String(fromOox?.priceWei ?? clientWei ?? "").trim();
+	if (/^\d+$/.test(raw) && raw !== "0") return raw;
+	if (Number.isFinite(fallbackEgld) && fallbackEgld > 0) return toAtomic(fallbackEgld, 18).toString();
+	return "";
+}
+function shortEgldRaw(raw) {
+	const n = fromAtomic(raw < 0n ? 0n : raw, 18);
+	if (n >= 10) return n.toFixed(2);
+	if (n >= 1) return n.toFixed(3);
+	return n.toFixed(4);
+}
+async function readAccountBal(address) {
+	const ok = (row) => row && row.balance != null ? row : null;
+	const direct = ok(await mxDirect(`/accounts/${address}?withGuardianInfo=true`, 4e3));
+	if (direct) return direct;
+	const gw = await getJson(`${GW}/address/${address}`, undefined, 6e3);
+	const acc = ok(gw?.data?.account);
+	if (acc) return acc;
+	return ok(await mx(`/accounts/${address}?withGuardianInfo=true`, 8e3));
+}
+async function readWegldRaw(address) {
+	const tok = await mx(`/accounts/${address}/tokens/${PAIRS.wegld}`);
+	try {
+		return BigInt(tok?.balance ?? "0");
+	} catch {
+		return 0n;
+	}
+}
+async function buildHeartBuy({ address, auctionId, quantity, clientWei, listingAmount, fallbackEgld, withStake }) {
+	const [ooxNfts, account, wegldRaw] = await Promise.all([
+		getJson(`${OOX}/collections/${COLLECTION.identifier}/nfts?size=80`),
+		readAccountBal(address),
+		readWegldRaw(address)
+	]);
+	if (!account) throw new Error("Account unavailable — retry in a moment");
+	const fromOox = mapListings(ooxNfts).find((row) => row.auctionId === auctionId);
+	const priceWei = listingWei(fromOox, clientWei, fallbackEgld || fromOox?.priceEgld);
+	const available = fromOox?.amount ?? listingAmount ?? quantity;
+	if (!priceWei) throw new Error("Listing no longer active on OOX");
+	if (fromOox && fromOox.paymentToken !== "EGLD") throw new Error("Only EGLD listings can be bought here");
+	if (quantity > available) throw new Error("Not enough Hearts in this listing");
+	const buyValue = BigInt(weiTimes(priceWei, quantity));
+	const buyGas = gasWei(CHAIN.buyGasLimit);
+	const stakeGas = withStake ? gasWei(CHAIN.stakeGasLimit) : 0n;
+	const need = buyValue + buyGas + stakeGas;
+	let egldRaw = 0n;
+	try {
+		egldRaw = BigInt(account.balance ?? "0");
+	} catch {
+		egldRaw = 0n;
+	}
+	if (egldRaw + wegldRaw < need) {
+		throw new Error(`Need ${shortEgldRaw(need)} EGLD (incl. gas). Wallet has ${shortEgldRaw(egldRaw)} EGLD + ${shortEgldRaw(wegldRaw)} WEGLD`);
+	}
+	let nonce = account?.nonce ?? 0;
+	const txs = [];
+	const push = (tx) => {
+		txs.push(withAccountGuard(tx, account));
+		nonce += 1;
 	};
-}).handler(async ({ data }) => {
-	const { address, auctionId, quantity } = data;
-	const [ooxNfts, account] = await Promise.all([getJson(`${OOX}/collections/${COLLECTION.identifier}/nfts?size=40`), mx(`/accounts/${address}?withGuardianInfo=true`)]);
-	const listing = mapListings(ooxNfts).find((row) => row.auctionId === auctionId);
-	if (!listing) throw new Error("Listing no longer active on OOX");
-	if (listing.paymentToken !== "EGLD") throw new Error("Only EGLD listings can be bought here");
-	if (quantity > listing.amount) throw new Error("Not enough Hearts in this listing");
-	const value = weiTimes(listing.priceWei, quantity);
-	const egld = fromDenom(account?.balance, 18);
-	const totalEgld = fromDenom(value, 18);
-	if (egld + 1e-12 < totalEgld) throw new Error("Not enough EGLD — swap ROAR to EGLD first");
-	return {
-		...withAccountGuard({
-			sender: address,
-			receiver: ADDRESSES.marketplace,
-			nonce: account?.nonce ?? 0,
-			value,
-			data: encodeBuyData(auctionId, quantity),
-			gasLimit: CHAIN.buyGasLimit,
-			gasPrice: CHAIN.gasPrice,
-			chainID: CHAIN.id
-		}, account),
-		auctionId,
-		quantity,
-		priceEgld: listing.priceEgld,
-		totalEgld,
-		isGuarded: Boolean(account?.isGuarded)
-	};
-});
-export const prepareBuyStakeTx = createServerFn({ method: "POST" }).validator((data) => {
-	const address = data.address.trim();
-	const auctionId = Number(data.auctionId);
-	const quantity = Math.floor(Number(data.quantity));
-	if (!isErdAddress(address)) throw new Error("Invalid address");
-	if (!Number.isFinite(auctionId) || auctionId <= 0) throw new Error("Invalid auction");
-	if (!Number.isFinite(quantity) || quantity <= 0) throw new Error("Invalid quantity");
-	return {
-		address,
-		auctionId,
-		quantity
-	};
-}).handler(async ({ data }) => {
-	const { address, auctionId, quantity } = data;
-	const [ooxNfts, account] = await Promise.all([getJson(`${OOX}/collections/${COLLECTION.identifier}/nfts?size=40`), mx(`/accounts/${address}?withGuardianInfo=true`)]);
-	const listing = mapListings(ooxNfts).find((row) => row.auctionId === auctionId);
-	if (!listing) throw new Error("Listing no longer active on OOX");
-	if (listing.paymentToken !== "EGLD") throw new Error("Only EGLD listings can be bought here");
-	if (quantity > listing.amount) throw new Error("Not enough Hearts in this listing");
-	const value = weiTimes(listing.priceWei, quantity);
-	const egld = fromDenom(account?.balance, 18);
-	const totalEgld = fromDenom(value, 18);
-	if (egld + 1e-12 < totalEgld + CHAIN.buyStakeKeepEgld) throw new Error("Not enough EGLD — swap ROAR to EGLD first");
-	const nonce = account?.nonce ?? 0;
-	return {
-		txs: [withAccountGuard({
-			sender: address,
-			receiver: ADDRESSES.marketplace,
-			nonce,
-			value,
-			data: encodeBuyData(auctionId, quantity),
-			gasLimit: CHAIN.buyGasLimit,
-			gasPrice: CHAIN.gasPrice,
-			chainID: CHAIN.id
-		}, account), withAccountGuard({
+	if (egldRaw < need) {
+		const unwrapGas = gasWei(CHAIN.unwrapGasLimit);
+		if (egldRaw < unwrapGas) {
+			throw new Error(`Keep at least 0.01 native EGLD for gas to unwrap WEGLD. You have ${shortEgldRaw(wegldRaw)} WEGLD`);
+		}
+		let unwrapAmt = need - egldRaw + unwrapGas;
+		if (unwrapAmt > wegldRaw) unwrapAmt = wegldRaw;
+		if (unwrapAmt > 0n) {
+			push({
+				sender: address,
+				receiver: ADDRESSES.wrapEgld,
+				nonce,
+				value: "0",
+				data: encodeUnwrapEgld(unwrapAmt),
+				gasLimit: CHAIN.unwrapGasLimit,
+				gasPrice: CHAIN.gasPrice,
+				chainID: CHAIN.id
+			});
+		}
+	}
+	push({
+		sender: address,
+		receiver: ADDRESSES.marketplace,
+		nonce,
+		value: buyValue.toString(),
+		data: encodeBuyData(auctionId, quantity),
+		gasLimit: CHAIN.buyGasLimit,
+		gasPrice: CHAIN.gasPrice,
+		chainID: CHAIN.id
+	});
+	if (withStake) {
+		push({
 			sender: address,
 			receiver: address,
-			nonce: nonce + 1,
+			nonce,
 			value: "0",
 			data: encodeStakeHearts(quantity),
 			gasLimit: CHAIN.stakeGasLimit,
 			gasPrice: CHAIN.gasPrice,
 			chainID: CHAIN.id
-		}, account)],
+		});
+	}
+	return {
+		txs,
 		auctionId,
 		quantity,
-		priceEgld: listing.priceEgld,
-		totalEgld,
+		priceEgld: fromOox?.priceEgld ?? fromAtomic(priceWei, 18),
+		totalEgld: fromAtomic(buyValue, 18),
 		isGuarded: Boolean(account?.isGuarded)
 	};
+}
+export const prepareBuyTx = createServerFn({ method: "POST" }).validator((data) => {
+	const address = data.address.trim();
+	const auctionId = Number(data.auctionId);
+	const quantity = Math.floor(Number(data.quantity));
+	const priceWei = String(data.priceWei ?? "").trim();
+	const listingAmount = Math.floor(Number(data.listingAmount ?? 0));
+	const priceEgld = Number(data.priceEgld ?? 0);
+	if (!isErdAddress(address)) throw new Error("Invalid address");
+	if (!Number.isFinite(auctionId) || auctionId <= 0) throw new Error("Invalid auction");
+	if (!Number.isFinite(quantity) || quantity <= 0) throw new Error("Invalid quantity");
+	return {
+		address,
+		auctionId,
+		quantity,
+		priceWei,
+		listingAmount,
+		priceEgld
+	};
+}).handler(async ({ data }) => {
+	return buildHeartBuy({
+		address: data.address,
+		auctionId: data.auctionId,
+		quantity: data.quantity,
+		clientWei: data.priceWei,
+		listingAmount: data.listingAmount,
+		fallbackEgld: data.priceEgld,
+		withStake: false
+	});
+});
+export const prepareBuyStakeTx = createServerFn({ method: "POST" }).validator((data) => {
+	const address = data.address.trim();
+	const auctionId = Number(data.auctionId);
+	const quantity = Math.floor(Number(data.quantity));
+	const priceWei = String(data.priceWei ?? "").trim();
+	const listingAmount = Math.floor(Number(data.listingAmount ?? 0));
+	const priceEgld = Number(data.priceEgld ?? 0);
+	if (!isErdAddress(address)) throw new Error("Invalid address");
+	if (!Number.isFinite(auctionId) || auctionId <= 0) throw new Error("Invalid auction");
+	if (!Number.isFinite(quantity) || quantity <= 0) throw new Error("Invalid quantity");
+	return {
+		address,
+		auctionId,
+		quantity,
+		priceWei,
+		listingAmount,
+		priceEgld
+	};
+}).handler(async ({ data }) => {
+	return buildHeartBuy({
+		address: data.address,
+		auctionId: data.auctionId,
+		quantity: data.quantity,
+		clientWei: data.priceWei,
+		listingAmount: data.listingAmount,
+		fallbackEgld: data.priceEgld,
+		withStake: true
+	});
 });
 export const prepareStakeTx = createServerFn({ method: "POST" }).validator((data) => {
 	const address = data.address.trim();
@@ -2916,15 +3110,21 @@ export const prepareDelegationTx = createServerFn({ method: "POST" }).validator(
 }).handler(async ({ data }) => {
 	const { address, kind, contract, amount } = data;
 	if (kind === "stake" || kind === "unstake" || kind === "withdraw") {
-		if (kind === "stake") {
-			const provider = await mx(`/providers/${contract}`);
-			if (!provider) throw new Error("Unknown validator");
-		}
-		const account = await mx(`/accounts/${address}?withGuardianInfo=true`);
+		const account = await readAccountBal(address);
+		if (!account) throw new Error("Account unavailable — retry in a moment");
 		const raw = kind === "withdraw" ? 0n : toAtomic(amount, 18);
 		if (kind !== "withdraw" && raw <= 0n) throw new Error("Invalid amount");
-		const dataField = kind === "stake" ? encodeDelegate() : kind === "unstake" ? encodeUnDelegate(raw) : encodeWithdrawDelegation();
+		let egldRaw = 0n;
+		try {
+			egldRaw = BigInt(account.balance ?? "0");
+		} catch {
+			egldRaw = 0n;
+		}
 		const gas = kind === "stake" ? CHAIN.delegationStakeGasLimit : kind === "unstake" ? CHAIN.delegationUnstakeGasLimit : CHAIN.delegationWithdrawGasLimit;
+		if (kind === "stake" && egldRaw < raw + gasWei(gas)) {
+			throw new Error(`Need ${shortEgldRaw(raw + gasWei(gas))} EGLD (incl. gas). Wallet has ${shortEgldRaw(egldRaw)} EGLD`);
+		}
+		const dataField = kind === "stake" ? encodeDelegate() : kind === "unstake" ? encodeUnDelegate(raw) : encodeWithdrawDelegation();
 		return {
 			kind,
 			txs: [withAccountGuard({
@@ -2940,7 +3140,8 @@ export const prepareDelegationTx = createServerFn({ method: "POST" }).validator(
 			amount: kind === "withdraw" ? 0 : fromAtomic(raw, 18)
 		};
 	}
-	const [account, rows] = await Promise.all([mx(`/accounts/${address}?withGuardianInfo=true`), mx(`/accounts/${address}/delegation`)]);
+	const [account, rows] = await Promise.all([readAccountBal(address), mx(`/accounts/${address}/delegation`)]);
+	if (!account) throw new Error("Account unavailable — retry in a moment");
 	const targets = (rows ?? []).filter((row) => {
 		const c = row.contract ?? "";
 		if (!isErdAddress(c)) return false;
@@ -3400,7 +3601,12 @@ export const prepareDustConvertTx = createServerFn({ method: "POST" }).validator
 	};
 });
 function broadcastError(body) {
-	return body.returnMessage || body.message || body.error || body.status || "Broadcast failed";
+	const raw = body?.returnMessage || body?.message || body?.error || body?.status || "Broadcast failed";
+	const text = String(raw);
+	if (text === "429" || /too many requests/i.test(text) || /rate.?limit/i.test(text)) {
+		return "Network is busy — wait a few seconds and retry";
+	}
+	return text;
 }
 
 export const prepareSendTx = createServerFn({ method: "POST" }).validator((data) => {
@@ -3505,19 +3711,29 @@ export const broadcastTx = createServerFn({ method: "POST" }).validator((data) =
 }).handler(async ({ data }) => {
 	const payload = { ...data.tx };
 	if (payload.guardian && !payload.guardianSignature) throw new Error("Missing guardian signature — open PrideVault in xPortal");
-	const res = await fetch(`${MX}/transactions`, {
-		method: "POST",
-		headers: {
-			accept: "application/json",
-			"content-type": "application/json",
-			"user-agent": "PrideVault/1.0 (Heart of ROAR)"
-		},
-		body: JSON.stringify(payload),
-		signal: AbortSignal.timeout(12e3)
-	});
-	const body = await res.json();
-	if (!res.ok || !body.txHash) throw new Error(broadcastError(body));
-	return { txHash: body.txHash };
+	let lastBody = null;
+	for (let attempt = 0; attempt < 4; attempt++) {
+		const res = await fetch(`${MX}/transactions`, {
+			method: "POST",
+			headers: {
+				accept: "application/json",
+				"content-type": "application/json",
+				"user-agent": "PrideVault/1.0 (Heart of ROAR)"
+			},
+			body: JSON.stringify(payload),
+			signal: AbortSignal.timeout(12e3)
+		});
+		const body = await res.json().catch(() => ({ status: res.status }));
+		lastBody = body;
+		if (res.status === 429) {
+			const ra = Number(res.headers.get("retry-after"));
+			await sleep((Number.isFinite(ra) && ra > 0 ? ra * 1e3 : 700 * (attempt + 1)) + Math.random() * 300);
+			continue;
+		}
+		if (!res.ok || !body.txHash) throw new Error(broadcastError(body));
+		return { txHash: body.txHash };
+	}
+	throw new Error(broadcastError(lastBody));
 });
 export const getTxStatus = createServerFn({ method: "POST" }).validator((data) => {
 	const txHash = data.txHash.trim();
@@ -3525,7 +3741,24 @@ export const getTxStatus = createServerFn({ method: "POST" }).validator((data) =
 	return { txHash };
 }).handler(async ({ data }) => {
 	const { txHash } = data;
-	const tx = await mxDirect(`/transactions/${txHash}`, 2500);
+	const gw = await getJson(`${GW}/transaction/${txHash}/process-status`, undefined, 2500);
+	const gwStatus = String(gw?.data?.status ?? "").toLowerCase();
+	if (gwStatus === "success" || gwStatus === "executed") {
+		return {
+			txHash,
+			status: "success",
+			message: ""
+		};
+	}
+	if (gwStatus === "fail" || gwStatus === "failed" || gwStatus === "invalid") {
+		const failed = await mxDirect(`/transactions/${txHash}`, 2000);
+		return {
+			txHash,
+			status: gwStatus === "invalid" ? "invalid" : "fail",
+			message: failed?.results?.[0]?.returnMessage || failed?.operations?.find((o) => o.message)?.message || "Transaction failed on-chain"
+		};
+	}
+	const tx = await mxDirect(`/transactions/${txHash}`, 2000);
 	if (!tx) return {
 		txHash,
 		status: "pending",

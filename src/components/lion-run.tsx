@@ -198,7 +198,7 @@ export function TxLaneHost({ t }: { t: Copy }) {
     <div className="pointer-events-none fixed inset-x-0 bottom-24 z-40 px-4">
       <div className="mx-auto w-full max-w-md overflow-hidden rounded-xl bg-surface p-3 shadow-[var(--shadow-border)]">
         <LionTrack done={lane.done} size="md" label={lane.done ? t.txLaneDone : t.txRun} />
-        <p className="mt-2 text-center text-xs text-volt">{lane.done ? t.txLaneDone : t.waitingTx}</p>
+        <p className="mt-2 text-center text-xs text-volt">{lane.done ? t.txLaneDone : sign ? t.signWaiting : t.txRun}</p>
       </div>
     </div>
   );

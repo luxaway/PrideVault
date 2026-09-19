@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { memo, useMemo, useState } from "react";
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -12,7 +12,7 @@ import { quoteFromPool } from "@/lib/swap-math";
 import { useVaultStore } from "@/lib/store";
 import { cn, fillAmt, formatEgld, formatNum, formatRoarClaim, formatUsd } from "@/lib/utils";
 
-export function RoarFarm({
+export const RoarFarm = memo(function RoarFarm({
   t,
   farm,
   position,
@@ -392,7 +392,7 @@ export function RoarFarm({
       </article>
     </section>
   );
-}
+});
 
 function Stat({
   label,

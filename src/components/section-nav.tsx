@@ -1,4 +1,5 @@
-import { ArrowLeftRight, Coins, Dices, Heart, LineChart, ShoppingBag, Trophy, Wallet } from "lucide-react";
+import { memo } from "react";
+import { ArrowLeftRight, Coins, Heart, LineChart, ShoppingBag, Trophy, Wallet } from "lucide-react";
 import type { AppSection } from "@/lib/config";
 import { SECTIONS } from "@/lib/config";
 import type { Copy } from "@/lib/i18n";
@@ -10,12 +11,11 @@ const ICONS = {
   buy: ShoppingBag,
   swap: ArrowLeftRight,
   roar: Coins,
-  games: Dices,
   board: Trophy,
   stats: LineChart,
 } as const;
 
-export function SectionNav({
+export const SectionNav = memo(function SectionNav({
   t,
   section,
 }: {
@@ -28,7 +28,6 @@ export function SectionNav({
     buy: t.navBuy,
     swap: t.navSwap,
     roar: t.navRoar,
-    games: t.navGames,
     board: t.navBoard,
     stats: t.navStats,
   };
@@ -63,4 +62,4 @@ export function SectionNav({
       <div className="dual-bar h-px w-full" />
     </nav>
   );
-}
+});

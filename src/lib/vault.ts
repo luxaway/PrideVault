@@ -8,6 +8,126 @@ export function daysLeft(now = Date.now()) {
   return Math.max(0, Math.ceil((VAULT.poolEnd - now) / 86_400_000));
 }
 
+export function weeksSincePoolStart(now = Date.now()) {
+  return Math.max(0, (now - VAULT.poolStart) / (VAULT.buybackDays * 86_400_000));
+}
+
+/** Yearly EGLD that NFT stakers receive from the 1250 EGLD treasury (70% of staking APR). */
+export function buybackYearlyEgld(aprPct: number) {
+  const apr = Number.isFinite(aprPct) ? Math.min(20, Math.max(0, aprPct)) : 0;
+  return VAULT.egldStaked * (apr / 100) * VAULT.splitVault;
+}
+
+export function buybackWeeklyEgld(aprPct: number) {
+  return buybackYearlyEgld(aprPct) / (365 / VAULT.buybackDays);
+}
+
+export function buybackDailyPerHeart(aprPct: number, farmHearts: number) {
+  const n = Math.max(1, farmHearts);
+  return buybackYearlyEgld(aprPct) / 365 / n;
+}
+
+export function farmDurationDays() {
+  return Math.max(1, (VAULT.poolEnd - VAULT.poolStart) / 86_400_000);
+}
+
+/** Weekly ROAR bought with 70% of the 1 250 EGLD staking rewards, deposited into the OOX farm. */
+export function weeklyBuybackRoar(aprPct: number, egldUsd: number, roarUsd: number) {
+  if (!(roarUsd > 0) || !(egldUsd > 0)) return 0;
+  return (buybackWeeklyEgld(aprPct) * egldUsd) / roarUsd;
+}
+
+export type FarmSimDay = {
+  day: number;
+  userRoar: number;
+  dailyNft: number;
+  remaining: number;
+};
+
+/**
+ * One farm. Weekly buyback tops up remaining → daily/NFT steps up.
+ * Farm is extended: simulation does not stop at poolEnd.
+ */
+export function simulateFarmDays({
+  days,
+  remaining,
+  farmHearts,
+  earnHearts,
+  weeklyRoar,
+}: {
+  days: number;
+  remaining: number;
+  farmHearts: number;
+  earnHearts: number;
+  weeklyRoar: number;
+}): { days: FarmSimDay[]; totalRoar: number; startDailyNft: number; endDailyNft: number } {
+  const max = COLLECTION.supply;
+  const duration = farmDurationDays();
+  const staked = Math.max(1, farmHearts);
+  const occ = occupancy(staked);
+  const earn = Math.max(0, earnHearts);
+  let rem = Math.max(0, remaining);
+  const rows: FarmSimDay[] = [];
+  let totalRoar = 0;
+  let startDailyNft = 0;
+  let endDailyNft = 0;
+  const drop = Math.max(0, weeklyRoar);
+  for (let i = 0; i < days; i++) {
+    if (i > 0 && i % VAULT.buybackDays === 0) rem += drop;
+    const dailyNft = rem > 0 ? (rem / duration / max) * occ : 0;
+    if (i === 0) startDailyNft = dailyNft;
+    endDailyNft = dailyNft;
+    const userRoar = dailyNft * earn;
+    rem = Math.max(0, rem - dailyNft * staked);
+    totalRoar += userRoar;
+    rows.push({ day: i, userRoar, dailyNft, remaining: rem });
+  }
+  return { days: rows, totalRoar, startDailyNft, endDailyNft };
+}
+
+export function remainingFromDaily(dailyNft: number, farmHearts: number) {
+  const occ = occupancy(farmHearts);
+  if (!(dailyNft > 0) || occ <= 0) return 0;
+  return dailyNft * farmDurationDays() * COLLECTION.supply / occ;
+}
+
+export function paybackDaysFromFarm({
+  remainEgld,
+  roarUsd,
+  egldUsd,
+  remaining,
+  farmHearts,
+  earnHearts,
+  weeklyRoar,
+  maxDays = 365 * 8,
+}: {
+  remainEgld: number;
+  roarUsd: number;
+  egldUsd: number;
+  remaining: number;
+  farmHearts: number;
+  earnHearts: number;
+  weeklyRoar: number;
+  maxDays?: number;
+}) {
+  if (remainEgld <= 1e-12) return 0;
+  if (!(roarUsd > 0) || !(egldUsd > 0) || earnHearts <= 0) return Number.POSITIVE_INFINITY;
+  const px = roarUsd / egldUsd;
+  const sim = simulateFarmDays({
+    days: maxDays,
+    remaining,
+    farmHearts,
+    earnHearts,
+    weeklyRoar,
+  });
+  let acc = 0;
+  for (let i = 0; i < sim.days.length; i++) {
+    acc += sim.days[i].userRoar * px;
+    if (acc >= remainEgld) return i + 1;
+  }
+  return Number.POSITIVE_INFINITY;
+}
+
 /**
  * OOX Dynamic Community farm:
  * remaining pool is emitted over the FULL farm duration against max supply,
