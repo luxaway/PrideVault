@@ -1,0 +1,16 @@
+/target
+/output
+Cargo.lock
+.idea
+.vscode
+*.wasm
+*.wat
+
+# deploy secrets
+deploy/devnet.env
+deploy/mainnet.env
+wallets/
+*.pem
+*.json
+!deploy/*.example
+!deploy/*.example.json

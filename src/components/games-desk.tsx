@@ -1,153 +1,480 @@
-import { useMemo, useState } from "react";
-import { Dices } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { Dices, Wallet } from "lucide-react";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { GAMES } from "@/lib/sections";
+import { LionRun } from "@/components/lion-run";
+import { GAMES } from "@/lib/config";
+import {
+  clampUnder,
+  diceCap,
+  diceChance,
+  diceMin,
+  diceMultiplier,
+  diceNet,
+  dicePayout,
+  diceRake,
+  diceRoll,
+  freshSeed,
+  type DiceToken,
+} from "@/lib/dice";
 import type { Copy } from "@/lib/i18n";
 import type { Session } from "@/lib/store";
 import { useVaultStore } from "@/lib/store";
-import { cn, formatNum } from "@/lib/utils";
+import { cn, formatEgld, formatNum, formatRoarClaim } from "@/lib/utils";
 
-const EDGE = 0.05;
-const RAKE_EGLD = 0.04;
-const RAKE_ROAR = 0.02;
+type TableSnap = {
+  live: boolean;
+  paused: boolean;
+  roundOpen: boolean;
+  minEgld: number;
+  capEgld: number;
+  maxEgld: number;
+  minRoar: number;
+  capRoar: number;
+  maxRoar: number;
+  freeEgld: number;
+  freeRoar: number;
+  rakeEgld: number;
+  rakeRoar: number;
+  claimEgld: number;
+  claimRoar: number;
+  sc?: string;
+};
 
-const TXT = {
-  fr: {
-    title: "ROAR Dice",
-    v1: "v1",
-    lead: "Dés on-chain. Mises lockées avant le tirage. Rake 2% en ROAR, 4% en EGLD. Edge maison 5%.",
-    under: "Gagner si le dé est sous…",
-    chance: (n: number) => `${n}% de chance`,
-    stake: "Mise",
-    winPay: "Payout si win",
-    rake: "Rake",
-    play: "Miser (devnet)",
-    soon: "Contrat pas encore déployé — desk prêt",
-    legal: "Jeu d’argent. Pas audité. Devnet d’abord.",
-  },
-  en: {
-    title: "ROAR Dice",
-    v1: "v1",
-    lead: "On-chain dice. Bets lock before the roll. 2% rake on ROAR, 4% on EGLD. 5% house edge.",
-    under: "Win if the roll is under…",
-    chance: (n: number) => `${n}% chance`,
-    stake: "Stake",
-    winPay: "Payout if win",
-    rake: "Rake",
-    play: "Bet (devnet)",
-    soon: "Contract not deployed yet — desk is ready",
-    legal: "Gambling product. Not audited. Devnet first.",
-  },
-} as const;
+type DemoRow = {
+  id: string;
+  token: DiceToken;
+  amount: number;
+  under: number;
+  roll: number;
+  won: boolean;
+  payout: number;
+  rake: number;
+  at: number;
+};
 
-function payout(stake: number, under: number, rake: number) {
-  const net = stake * (1 - rake);
-  return net * (100 / under) * (1 - EDGE);
+const DEMO_KEY = "pv.dice.table";
+
+type DemoTable = {
+  bankEgld: number;
+  bankRoar: number;
+  treasuryEgld: number;
+  treasuryRoar: number;
+  claimEgld: number;
+  claimRoar: number;
+  history: DemoRow[];
+};
+
+function emptyDemo(): DemoTable {
+  return {
+    bankEgld: GAMES.seedEgld,
+    bankRoar: GAMES.seedRoar,
+    treasuryEgld: 0,
+    treasuryRoar: 0,
+    claimEgld: 0,
+    claimRoar: 0,
+    history: [],
+  };
 }
 
-export function GamesDesk({
-  session,
-  onConnect,
+function loadDemo(): DemoTable {
+  try {
+    const raw = JSON.parse(localStorage.getItem(DEMO_KEY) || "null");
+    if (!raw || typeof raw !== "object") return emptyDemo();
+    return { ...emptyDemo(), ...raw, history: Array.isArray(raw.history) ? raw.history.slice(0, 12) : [] };
+  } catch {
+    return emptyDemo();
+  }
+}
+
+function saveDemo(row: DemoTable) {
+  localStorage.setItem(DEMO_KEY, JSON.stringify(row));
+}
+
+export function DiceDesk({
   t,
+  session,
+  table,
+  canSign,
+  sessionLost,
+  busy,
+  onConnect,
+  onBet,
+  onClaim,
+  onResolve,
+  onStart,
+  onOpen,
 }: {
-  session: Session | null;
-  onConnect: () => void;
   t: Copy;
+  session: Session | null;
+  table: TableSnap | null;
+  canSign: boolean;
+  sessionLost: boolean;
+  busy: "bet" | "claim" | "resolve" | "open" | "start" | null;
+  onConnect: () => void;
+  onBet: (token: DiceToken, amount: number, under: number) => void;
+  onClaim: () => void;
+  onResolve: () => void;
+  onStart: () => void;
+  onOpen: (seedEgld: number, seedRoar: number) => void;
 }) {
-  const lang = useVaultStore((s) => s.lang);
-  const g = TXT[lang] ?? TXT.en;
-  const [token, setToken] = useState<"EGLD" | "ROAR">("ROAR");
+  const refreshHoldings = useVaultStore((s) => s.refreshHoldings);
+  const [token, setToken] = useState<DiceToken>("EGLD");
   const [under, setUnder] = useState(50);
-  const [stake, setStake] = useState("1");
-  const rake = token === "ROAR" ? RAKE_ROAR : RAKE_EGLD;
-  const amount = Number(stake) || 0;
-  const winPay = useMemo(() => payout(amount, under, rake), [amount, under, rake]);
-  const live = Boolean(GAMES.roarDice);
+  const [amount, setAmount] = useState<number>(GAMES.minBetEgld);
+  const [demo, setDemo] = useState<DemoTable>(emptyDemo);
+  const [rolling, setRolling] = useState<number | null>(null);
+  const [last, setLast] = useState<DemoRow | null>(null);
+  const [seedEgld, setSeedEgld] = useState(2);
+  const [seedRoar, setSeedRoar] = useState(200);
+  const anim = useRef(0);
+
+  useEffect(() => {
+    setDemo(loadDemo());
+  }, []);
+
+  const live = Boolean(table?.live);
+  const min = live ? (token === "ROAR" ? table!.minRoar : table!.minEgld) : diceMin(token);
+  const cap = live
+    ? token === "ROAR"
+      ? Math.min(table!.maxRoar, table!.capRoar)
+      : Math.min(table!.maxEgld, table!.capEgld)
+    : diceCap(token);
+  const net = diceNet(amount, token);
+  const payout = dicePayout(net, under);
+  const rake = diceRake(amount, token);
+  const chance = diceChance(under);
+  const multi = diceMultiplier(under);
+  const wallet = token === "ROAR" ? session?.roarWallet ?? 0 : session?.egldWallet ?? 0;
+  const claimEgld = live ? table?.claimEgld ?? 0 : demo.claimEgld;
+  const claimRoar = live ? table?.claimRoar ?? 0 : demo.claimRoar;
+  const bankEgld = live ? table?.freeEgld ?? 0 : demo.bankEgld;
+  const bankRoar = live ? table?.freeRoar ?? 0 : demo.bankRoar;
+  const treEgld = live ? table?.rakeEgld ?? 0 : demo.treasuryEgld;
+  const treRoar = live ? table?.rakeRoar ?? 0 : demo.treasuryRoar;
+
+  useEffect(() => {
+    setAmount(min);
+  }, [token, min]);
+
+  const display = rolling !== null ? rolling : last ? last.roll : null;
+
+  const playDemo = () => {
+    if (!session) {
+      onConnect();
+      return;
+    }
+    if (amount < min || amount > cap) {
+      toast.error(t.diceNeedFunds);
+      return;
+    }
+    if (amount > wallet) {
+      toast.error(t.diceNeedFunds);
+      return;
+    }
+    const seed = Number(freshSeed() % 100_000_003n);
+    const start = performance.now();
+    cancelAnimationFrame(anim.current);
+    const tick = (now: number) => {
+      const elapsed = now - start;
+      setRolling(Math.floor(Math.random() * 100));
+      if (elapsed < 900) {
+        anim.current = requestAnimationFrame(tick);
+        return;
+      }
+      const roll = diceRoll(seed, 1);
+      const won = roll < under;
+      const pay = won ? payout : 0;
+      const row: DemoRow = {
+        id: `${Date.now()}`,
+        token,
+        amount,
+        under,
+        roll,
+        won,
+        payout: pay,
+        rake,
+        at: Date.now(),
+      };
+      setRolling(null);
+      setLast(row);
+      setDemo((prev) => {
+        const next: DemoTable = {
+          bankEgld: token === "EGLD" ? prev.bankEgld + amount - pay - rake : prev.bankEgld,
+          bankRoar: token === "ROAR" ? prev.bankRoar + amount - pay - rake : prev.bankRoar,
+          treasuryEgld: token === "EGLD" ? prev.treasuryEgld + rake : prev.treasuryEgld,
+          treasuryRoar: token === "ROAR" ? prev.treasuryRoar + rake : prev.treasuryRoar,
+          claimEgld: token === "EGLD" ? prev.claimEgld + pay : prev.claimEgld,
+          claimRoar: token === "ROAR" ? prev.claimRoar + pay : prev.claimRoar,
+          history: [row, ...prev.history].slice(0, 12),
+        };
+        saveDemo(next);
+        return next;
+      });
+      if (session.mode === "demo") {
+        refreshHoldings(
+          session.heartsWallet,
+          token === "ROAR" ? Math.max(0, session.roarWallet - amount) : session.roarWallet,
+          token === "EGLD" ? Math.max(0, session.egldWallet - amount) : session.egldWallet,
+        );
+      }
+      toast.success(won ? t.diceWin : t.diceLose);
+    };
+    anim.current = requestAnimationFrame(tick);
+  };
+
+  const claimDemo = () => {
+    if (demo.claimEgld <= 0 && demo.claimRoar <= 0) return;
+    if (session?.mode === "demo") {
+      refreshHoldings(
+        session.heartsWallet,
+        session.roarWallet + demo.claimRoar,
+        session.egldWallet + demo.claimEgld,
+      );
+    }
+    setDemo((prev) => {
+      const next = { ...prev, claimEgld: 0, claimRoar: 0 };
+      saveDemo(next);
+      return next;
+    });
+    toast.success(t.diceClaimOk);
+  };
+
+  const handleBet = () => {
+    if (!session) return onConnect();
+    if (live) {
+      if (!canSign) {
+        toast.error(sessionLost ? t.sessionLost : t.needSign);
+        onConnect();
+        return;
+      }
+      if (!table?.roundOpen) {
+        toast.error(t.diceStart);
+        return;
+      }
+      onBet(token, amount, under);
+      return;
+    }
+    playDemo();
+  };
+
+  const fmtAmt = (n: number, tok: DiceToken) =>
+    tok === "ROAR" ? `${formatRoarClaim(n)} ROAR` : formatEgld(n, 4);
 
   return (
-    <section id="games" className="scroll-mt-32 mx-auto max-w-xl px-4 py-6">
-      <div className="rounded-2xl border border-line bg-surface p-5">
-        <div className="flex items-center gap-2">
-          <Dices className="size-5 text-ember" />
-          <h2 className="text-lg font-semibold">{g.title}</h2>
-          <Badge variant="mute">{g.v1}</Badge>
-        </div>
-        <p className="mt-2 text-sm leading-relaxed text-muted">{g.lead}</p>
+    <section className="mx-auto max-w-xl px-4 py-10">
+      <article className="relative overflow-hidden rounded-xl bg-surface p-6 shadow-[var(--shadow-border)] sm:p-10">
+        <div className="pointer-events-none absolute inset-x-0 top-0 h-0.5 dual-bar" />
+        <header className="flex items-start justify-between gap-3">
+          <div>
+            <p className="text-xs uppercase tracking-[0.22em] text-muted">{t.diceKicker}</p>
+            <h2 className="mt-1 font-display text-2xl font-medium">{t.diceTitle}</h2>
+            <p className="mt-2 text-sm leading-relaxed text-muted">{t.diceLead}</p>
+          </div>
+          <Badge variant={live ? "volt" : "mute"}>{live ? t.diceLive : t.diceDemo}</Badge>
+        </header>
 
-        <div className="mt-4 grid grid-cols-2 gap-2">
-          {(["ROAR", "EGLD"] as const).map((id) => (
+        {!live ? <p className="mt-4 text-sm text-muted">{t.diceOffchain}</p> : null}
+
+        {!live ? (
+          <div className="mt-6 border-y border-border py-5">
+            <p className="text-xs uppercase tracking-[0.16em] text-muted">{t.diceOpenKicker}</p>
+            <p className="mt-2 text-sm leading-relaxed text-muted">{t.diceOpenLead}</p>
+            <div className="mt-4 grid grid-cols-2 gap-3">
+              <label className="text-xs text-muted">
+                {t.diceSeedEgld}
+                <input
+                  type="number"
+                  min={1}
+                  step={0.5}
+                  value={seedEgld}
+                  onChange={(e) => setSeedEgld(Math.max(1, Number(e.target.value) || 1))}
+                  className="mt-1 h-11 w-full rounded-lg bg-bg px-3 text-sm tabular text-fg shadow-[var(--shadow-border)]"
+                />
+              </label>
+              <label className="text-xs text-muted">
+                {t.diceSeedRoar}
+                <input
+                  type="number"
+                  min={0}
+                  step={50}
+                  value={seedRoar}
+                  onChange={(e) => setSeedRoar(Math.max(0, Number(e.target.value) || 0))}
+                  className="mt-1 h-11 w-full rounded-lg bg-bg px-3 text-sm tabular text-fg shadow-[var(--shadow-border)]"
+                />
+              </label>
+            </div>
+            <Button
+              className="mt-4 h-12 w-full"
+              onClick={() => (session && canSign ? onOpen(seedEgld, seedRoar) : onConnect())}
+              disabled={busy !== null}
+            >
+              {busy === "open" ? <LionRun size="sm" label={t.diceOpening} /> : t.diceOpen}
+            </Button>
+          </div>
+        ) : table?.sc ? (
+          <p className="mt-4 truncate text-xs text-muted">{table.sc}</p>
+        ) : null}
+
+        <div className="mt-6 grid grid-cols-2 divide-x divide-y divide-border border-y border-border">
+          <Stat label={t.diceBank} value={formatEgld(bankEgld, 2)} hint={`${formatRoarClaim(bankRoar)} ROAR`} />
+          <Stat label={t.diceTreasury} value={formatEgld(treEgld, 4)} hint={`${formatRoarClaim(treRoar)} ROAR`} />
+        </div>
+
+        <div className="mt-6 flex rounded-full bg-bg p-0.5 shadow-[var(--shadow-border)]">
+          {(["EGLD", "ROAR"] as DiceToken[]).map((id) => (
             <button
               key={id}
               type="button"
               onClick={() => setToken(id)}
               className={cn(
-                "h-11 rounded-full text-sm font-medium",
-                token === id ? "bg-ember text-primary-foreground" : "bg-surface-2 text-muted",
+                "h-11 flex-1 rounded-full text-sm font-medium transition-[background-color,color] duration-150",
+                token === id ? "bg-volt text-bg" : "text-muted hover:text-fg",
               )}
             >
-              {id} · {id === "ROAR" ? "2%" : "4%"} rake
+              {id}
             </button>
           ))}
         </div>
 
-        <label className="mt-5 block text-xs text-muted">{g.under}</label>
-        <input
-          type="range"
-          min={2}
-          max={96}
-          value={under}
-          onChange={(e) => setUnder(Number(e.target.value))}
-          className="mt-2 w-full accent-[hsl(var(--ember))]"
-        />
-        <div className="mt-1 flex justify-between text-xs text-muted">
-          <span>2</span>
-          <span className="text-fg font-medium">{under}</span>
-          <span>96</span>
+        <div className="mt-6">
+          <div className="flex items-end justify-between">
+            <p className="text-xs uppercase tracking-[0.16em] text-muted">{t.diceAmount}</p>
+            <p className="text-xs text-muted">
+              {t.inWallet} {fmtAmt(wallet, token)}
+            </p>
+          </div>
+          <div className="mt-2 flex gap-2">
+            {[min, (min + cap) / 2, cap].map((n) => (
+              <button
+                key={n}
+                type="button"
+                onClick={() => setAmount(Number(n.toFixed(token === "ROAR" ? 0 : 3)))}
+                className="h-11 flex-1 rounded-full bg-bg text-xs font-medium text-muted shadow-[var(--shadow-border)] hover:text-fg"
+              >
+                {fmtAmt(n, token)}
+              </button>
+            ))}
+          </div>
+          <input
+            type="range"
+            min={min}
+            max={Math.max(min, cap)}
+            step={token === "ROAR" ? 1 : 0.01}
+            value={Math.min(cap, Math.max(min, amount))}
+            onChange={(e) => setAmount(Number(e.target.value))}
+            className="heart-zoom mt-2"
+            aria-label={t.diceAmount}
+          />
         </div>
-        <p className="mt-1 text-sm text-muted">{g.chance(under)}</p>
 
-        <label className="mt-4 block text-xs text-muted">{g.stake}</label>
-        <Input
-          value={stake}
-          inputMode="decimal"
-          onChange={(e) => setStake(e.target.value)}
-          className="mt-1 h-12"
-        />
-
-        <dl className="mt-4 grid grid-cols-2 gap-3 text-sm">
-          <div className="rounded-xl bg-surface-2 p-3">
-            <dt className="text-xs text-muted">{g.winPay}</dt>
-            <dd className="mt-1 font-medium">
-              {formatNum(winPay)} {token}
-            </dd>
+        <div className="mt-6">
+          <div className="flex items-end justify-between">
+            <p className="text-xs uppercase tracking-[0.16em] text-muted">
+              {t.diceUnder} {under}
+            </p>
+            <p className="text-sm tabular text-muted">
+              {chance}% · ×{formatNum(multi, 2)}
+            </p>
           </div>
-          <div className="rounded-xl bg-surface-2 p-3">
-            <dt className="text-xs text-muted">{g.rake}</dt>
-            <dd className="mt-1 font-medium">{token === "ROAR" ? "2%" : "4%"}</dd>
-          </div>
-        </dl>
+          <input
+            type="range"
+            min={GAMES.minUnder}
+            max={GAMES.maxUnder}
+            step={1}
+            value={under}
+            onChange={(e) => setUnder(clampUnder(Number(e.target.value)))}
+            className="heart-zoom mt-2"
+            aria-label={t.diceUnder}
+          />
+        </div>
 
-        {!session ? (
-          <Button className="mt-5 h-12 w-full" size="lg" onClick={onConnect}>
-            {t.connectXportal}
-          </Button>
-        ) : (
+        <div className="mt-4 grid grid-cols-3 divide-x divide-border border-y border-border">
+          <Stat label={t.diceChance} value={`${chance}%`} hint={t.diceUnder} />
+          <Stat label={t.dicePayout} value={fmtAmt(payout, token)} hint={`×${formatNum(multi, 2)}`} />
+          <Stat label={t.diceRake} value={fmtAmt(rake, token)} hint={token === "EGLD" ? "4%" : "2%"} />
+        </div>
+
+        <div className="mt-8 text-center">
+          <p className="font-display text-6xl tabular leading-none">
+            {display === null ? "—" : String(display).padStart(2, "0")}
+          </p>
+          <p className="mt-2 text-sm text-muted">
+            {last ? (last.won ? t.diceWin : t.diceLose) : t.diceRollHint}
+          </p>
+        </div>
+
+        <Button className="mt-6 h-12 w-full" size="lg" onClick={handleBet} disabled={busy !== null || rolling !== null}>
+          {busy === "bet" || rolling !== null ? <LionRun size="sm" label={t.diceRolling} /> : <Dices />}
+          {t.diceRoll} · {fmtAmt(amount, token)}
+        </Button>
+
+        <div className="mt-4 grid grid-cols-2 gap-2">
           <Button
-            className="mt-5 h-12 w-full"
-            size="lg"
-            disabled={!live}
-            onClick={() => {
-              if (!live) toast.message(g.soon);
-            }}
+            variant="volt"
+            className="h-12"
+            disabled={(claimEgld <= 0 && claimRoar <= 0) || busy !== null}
+            onClick={() => (live ? onClaim() : claimDemo())}
           >
-            {live ? g.play : g.soon}
+            {busy === "claim" ? <LionRun size="sm" label={t.txRun} /> : <Wallet />}
+            {t.diceClaim}
           </Button>
-        )}
-        <p className="mt-3 text-center text-[11px] leading-relaxed text-muted">{g.legal}</p>
-      </div>
+          {live ? (
+            <Button
+              variant="outline"
+              className="h-12"
+              disabled={busy !== null}
+              onClick={() => (table?.roundOpen ? onResolve() : onStart())}
+            >
+              {busy === "resolve" || busy === "start" ? (
+                <LionRun size="sm" label={t.txRun} />
+              ) : table?.roundOpen ? (
+                t.diceResolve
+              ) : (
+                t.diceStart
+              )}
+            </Button>
+          ) : (
+            <div className="flex h-12 items-center justify-center text-xs text-muted">
+              {t.diceClaimable} {formatEgld(claimEgld, 4)} · {formatRoarClaim(claimRoar)} ROAR
+            </div>
+          )}
+        </div>
+
+        <p className="mt-6 text-xs leading-relaxed text-muted">{t.diceDisclaimer}</p>
+
+        <div className="mt-8 border-t border-border pt-6">
+          <p className="text-xs uppercase tracking-[0.22em] text-muted">{t.diceHistory}</p>
+          {demo.history.length === 0 ? (
+            <p className="mt-3 text-sm text-muted">{t.diceEmpty}</p>
+          ) : (
+            <ul className="mt-3 grid gap-2">
+              {demo.history.map((row) => (
+                <li key={row.id} className="flex items-center justify-between text-sm">
+                  <span className="text-muted">
+                    {row.token} · {t.diceUnder} {row.under} · {String(row.roll).padStart(2, "0")}
+                  </span>
+                  <span className={cn("tabular", row.won ? "text-volt" : "text-ember")}>
+                    {row.won ? "+" : "−"}
+                    {fmtAmt(row.won ? row.payout : row.amount, row.token)}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </article>
     </section>
+  );
+}
+
+function Stat({ label, value, hint }: { label: string; value: string; hint?: string }) {
+  return (
+    <div className="px-3 py-4">
+      <p className="text-xs uppercase tracking-[0.16em] text-muted">{label}</p>
+      <p className="mt-2 truncate font-display text-xl tabular leading-none">{value}</p>
+      {hint ? <p className="mt-1.5 truncate text-xs text-muted">{hint}</p> : null}
+    </div>
   );
 }

@@ -82,6 +82,12 @@ export const CHAIN = {
   burnifyClaimGasLimit: 50_000_000,
   burnifyNftBaseGasLimit: 20_000_000,
   burnifyNftExtraGasLimit: 10_000_000,
+  diceBetGasLimit: 8_000_000,
+  diceClaimGasLimit: 8_000_000,
+  diceResolveGasLimit: 16_000_000,
+  diceDeployGasLimit: 40_000_000,
+  diceFundGasLimit: 8_000_000,
+  diceStartGasLimit: 8_000_000,
   buyStakeKeepEgld: 0.055,
   guardedExtraGas: 50_000,
   txVersion: 2,
@@ -244,11 +250,28 @@ export const TIMEFRAMES = [
   { id: "1w", resolution: "W", label: "1W", seconds: 604800, countback: 104 },
 ] as const;
 
+export const GAMES = {
+  /** PrideVault casino SC — set after mainnet deploy. Empty = demo table. */
+  roarDice: "",
+  rakeEgldBps: 400,
+  rakeRoarBps: 200,
+  houseEdgeBps: 500,
+  minUnder: 2,
+  maxUnder: 96,
+  minBetEgld: 0.05,
+  capBetEgld: 0.2,
+  minBetRoar: 10,
+  capBetRoar: 500,
+  seedEgld: 10,
+  seedRoar: 5_000,
+} as const;
+
 export const SECTIONS = [
   { id: "heart", hash: "heart" },
   { id: "wallet", hash: "wallet" },
   { id: "buy", hash: "buy" },
   { id: "swap", hash: "swap" },
+  { id: "play", hash: "play" },
   { id: "roar", hash: "roar" },
   { id: "board", hash: "board" },
   { id: "stats", hash: "stats" },
@@ -267,6 +290,7 @@ export function sectionFromHash(hash: string): AppSection {
   if (h === "wallet" || h === "portefeuille") return "wallet";
   if (h === "marche" || h === "buy" || h === "market") return "buy";
   if (h === "swap") return "swap";
+  if (h === "play" || h === "dice" || h === "jeu" || h === "des" || h === "casino") return "play";
   if (h === "roar" || h === "farm") return "roar";
   if (h === "board" || h === "holders" || h === "classement" || h === "leaderboard" || h === "ranks")
     return "board";

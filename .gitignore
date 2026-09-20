@@ -21,7 +21,6 @@ artifacts
 coverage
 playwright-report
 test-results
-.grok/skills/
-.grok/references/
-.grok/favicon-*.png
-assets/
+contracts/**/target
+contracts/**/wasm
+

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { ConnectDialog } from "@/components/connect-dialog";
+import { DiceDesk } from "@/components/games-desk";
 import { Header } from "@/components/header";
 import { HeartGate, HeartPnlCard } from "@/components/heart-pnl";
 import { MarketBoard } from "@/components/market";
@@ -54,6 +55,9 @@ import {
   prepareSendTx,
   prepareUnstakeTx,
   getTxStatus,
+  getDiceTable,
+  prepareDiceTx,
+  prepareDiceDeployTx,
   type FarmAction,
   type FarmPosition,
   type BurnifyAction,
@@ -75,6 +79,8 @@ import {
   signPreparedTxs,
   subscribeWalletReady,
 } from "@/lib/wallet";
+import type { DiceToken } from "@/lib/dice";
+import { loadDiceSc, saveDiceSc } from "@/lib/dice";
 import { beginTxLane, finishTxLane, hideTxLane } from "@/lib/tx-lane";
 
 let livePaused = false;
@@ -237,6 +243,8 @@ export function PrideApp() {
   const [buyingStake, setBuyingStake] = useState(false);
   const [swapping, setSwapping] = useState(false);
   const [staking, setStaking] = useState<"stake" | "unstake" | "claim" | "restake" | null>(null);
+  const [dicing, setDicing] = useState<"bet" | "claim" | "resolve" | "open" | "start" | null>(null);
+  const [diceSc, setDiceSc] = useState("");
   const [farming, setFarming] = useState<FarmAction | null>(null);
   const [swapStaking, setSwapStaking] = useState(false);
   const [dusting, setDusting] = useState(false);
@@ -369,6 +377,18 @@ export function PrideApp() {
     queryFn: () => getSwapCatalog(),
     staleTime: 60_000,
     enabled: Boolean(session),
+  });
+
+  useEffect(() => {
+    setDiceSc(loadDiceSc());
+  }, []);
+
+  const diceTable = useQuery({
+    queryKey: ["dice-table", session?.address, diceSc],
+    queryFn: () => getDiceTable({ data: { address: session?.address || "", sc: diceSc } }),
+    enabled: section === "play",
+    staleTime: 8_000,
+    refetchInterval: () => (section === "play" && !livePaused ? 12_000 : false),
   });
 
   useEffect(() => {
@@ -1212,6 +1232,114 @@ export function PrideApp() {
     }
   }
 
+  async function runDice(kind: "bet" | "claim" | "resolve" | "start", token?: DiceToken, amount?: number, under?: number) {
+    if (!session || session.mode === "demo") return;
+    if (!canSign) {
+      toast.error(sessionLost ? t.sessionLost : t.needSign);
+      setOpen(true);
+      return;
+    }
+    setDicing(kind === "start" ? "start" : kind);
+    const loading = toast.loading(t.staking);
+    const title =
+      kind === "bet" ? t.signDiceBet : kind === "claim" ? t.signDiceClaim : kind === "start" ? t.signDiceStart : t.signDiceResolve;
+    try {
+      const prepared = await prepareDiceTx({
+        data: {
+          address: session.address,
+          sc: diceSc,
+          kind,
+          token,
+          amount,
+          under,
+        },
+      });
+      const signed = await signPreparedTx(prepared, { title, steps: [title] });
+      toast.loading(t.broadcasting, { id: loading });
+      const { txHash } = await broadcastTx({ data: { tx: signed } });
+      toast.loading(t.waitingTx, { id: loading });
+      const done = await waitForTx(txHash);
+      throwIfTxFailed(done, t.diceError);
+      void diceTable.refetch();
+      void refreshLive();
+      await toastTxResult(
+        done,
+        loading,
+        kind === "bet" ? t.diceBetOk : kind === "claim" ? t.diceClaimOk : kind === "start" ? t.diceStartOk : t.diceResolve,
+        t,
+      );
+    } catch (err) {
+      hideTxLane();
+      const message = err instanceof Error ? err.message : t.diceError;
+      toast.error(message, { id: loading });
+    } finally {
+      setDicing(null);
+    }
+  }
+
+  async function onDiceOpen(seedEgld: number, seedRoar: number) {
+    if (!session || session.mode === "demo") {
+      toast.error(t.needSign);
+      setOpen(true);
+      return;
+    }
+    if (!canSign) {
+      toast.error(sessionLost ? t.sessionLost : t.needSign);
+      setOpen(true);
+      return;
+    }
+    setDicing("open");
+    const loading = toast.loading(t.diceOpening);
+    try {
+      const prepared = await prepareDiceDeployTx({
+        data: { address: session.address, seedEgld, seedRoar },
+      });
+      const signed = await signPreparedTxs(prepared.txs, {
+        title: t.signDiceOpen,
+        steps: prepared.txs.map((_, i) =>
+          i === 0 ? t.signDiceDeploy : i === prepared.txs.length - 1 ? t.signDiceStart : t.signDiceFund,
+        ),
+      });
+      toast.loading(t.broadcasting, { id: loading });
+      let lastHash = "";
+      for (let i = 0; i < signed.length; i++) {
+        const { txHash } = await broadcastTx({ data: { tx: signed[i] } });
+        lastHash = txHash;
+        if (i < signed.length - 1) {
+          const mid = await waitForTx(txHash);
+          throwIfTxUnconfirmed(mid, t.txPendingMid, t.diceError);
+        }
+      }
+      toast.loading(t.waitingTx, { id: loading });
+      const done = await waitForTx(lastHash);
+      throwIfTxFailed(done, t.diceError);
+      saveDiceSc(prepared.sc);
+      setDiceSc(prepared.sc);
+      void diceTable.refetch();
+      void refreshLive();
+      await toastTxResult(done, loading, t.diceOpenOk, t);
+    } catch (err) {
+      hideTxLane();
+      const message = err instanceof Error ? err.message : t.diceError;
+      toast.error(message, { id: loading });
+    } finally {
+      setDicing(null);
+    }
+  }
+
+  function onDiceBet(token: DiceToken, amount: number, under: number) {
+    void runDice("bet", token, amount, under);
+  }
+  function onDiceClaim() {
+    void runDice("claim");
+  }
+  function onDiceResolve() {
+    void runDice("resolve");
+  }
+  function onDiceStart() {
+    void runDice("start");
+  }
+
   const sendFn = useRef(handleSend);
   sendFn.current = handleSend;
   const sendRoar = useCallback((to: string, amount: number) => {
@@ -1374,6 +1502,23 @@ export function PrideApp() {
             onSwap={onSwapDesk}
             onDust={onDustConvert}
             onConnect={openConnect}
+          />
+        ) : null}
+
+        {section === "play" ? (
+          <DiceDesk
+            t={t}
+            session={session}
+            table={diceTable.data ?? null}
+            canSign={canSign}
+            sessionLost={sessionLost}
+            busy={dicing}
+            onConnect={openConnect}
+            onBet={onDiceBet}
+            onClaim={onDiceClaim}
+            onResolve={onDiceResolve}
+            onStart={onDiceStart}
+            onOpen={onDiceOpen}
           />
         ) : null}
 

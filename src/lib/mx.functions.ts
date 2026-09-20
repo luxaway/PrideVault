@@ -8,6 +8,7 @@ import {
   COLLECTION,
   DUST,
   FARM,
+  GAMES,
   HATOM,
   LST,
   PAIRS,
@@ -50,6 +51,15 @@ import {
   encodeUnstakeHearts,
   encodeUnwrapEgld,
   encodeWrapEgld,
+  encodePlaceBet,
+  encodeDiceClaim,
+  encodeResolveRound,
+  encodeEsdtPlaceBet,
+  encodeFundBankroll,
+  encodeStartRound,
+  encodeEsdtFundBankroll,
+  encodeContractDeploy,
+  encodeDiceInit,
   encodeBurnifyStakeBfy,
   encodeBurnifyUnstakeBfy,
   encodeBurnifyClaim,
@@ -4871,4 +4881,294 @@ export const prepareSwapTx = createServerFn({ method: "POST" }).validator((data)
 		ticker: token.ticker
 	};
 });
+
+export const getDiceTable = createServerFn({ method: "POST" }).validator((data) => {
+	const address = String(data?.address ?? "").trim();
+	const sc = diceSc(data?.sc);
+	return { address: isErdAddress(address) ? address : "", sc };
+}).handler(async ({ data }) => {
+	const sc = data.sc;
+	if (!sc) {
+		return {
+			live: false,
+			paused: false,
+			roundOpen: false,
+			roundId: 0,
+			endBlock: 0,
+			block: 0,
+			minEgld: GAMES.minBetEgld,
+			capEgld: GAMES.capBetEgld,
+			maxEgld: GAMES.capBetEgld,
+			minRoar: GAMES.minBetRoar,
+			capRoar: GAMES.capBetRoar,
+			maxRoar: GAMES.capBetRoar,
+			freeEgld: GAMES.seedEgld,
+			freeRoar: GAMES.seedRoar,
+			rakeEgld: 0,
+			rakeRoar: 0,
+			claimEgld: 0,
+			claimRoar: 0,
+			sc: ""
+		};
+	}
+	const addrHex = data.address ? bech32ToHex(data.address) : "";
+	const [paused, open, roundId, end, minE, capE, maxE, minR, capR, maxR, freeE, freeR, rakeE, rakeR, claimE, claimR, net] = await Promise.all([
+		diceView(sc, "isPaused"),
+		diceView(sc, "isRoundOpen"),
+		diceView(sc, "getRoundId"),
+		diceView(sc, "getRoundEndBlock"),
+		diceView(sc, "getMinBetEgld"),
+		diceView(sc, "getCapMaxEgld"),
+		diceView(sc, "getDynamicMaxBetEgld"),
+		diceView(sc, "getMinBetRoar"),
+		diceView(sc, "getCapMaxRoar"),
+		diceView(sc, "getDynamicMaxBetRoar"),
+		diceView(sc, "getFreeBankrollEgld"),
+		diceView(sc, "getFreeBankrollRoar"),
+		diceView(sc, "getRakeAccruedEgld"),
+		diceView(sc, "getRakeAccruedRoar"),
+		addrHex ? diceView(sc, "getClaimableEgld", [addrHex]) : Promise.resolve(0n),
+		addrHex ? diceView(sc, "getClaimableRoar", [addrHex]) : Promise.resolve(0n),
+		mx(`/network/status/4294967295`)
+	]);
+	return {
+		live: true,
+		paused: paused > 0n,
+		roundOpen: open > 0n,
+		roundId: Number(roundId),
+		endBlock: Number(end),
+		block: Number(net?.erd_nonce ?? net?.erdNonce ?? 0),
+		minEgld: fromAtomic(minE, 18),
+		capEgld: fromAtomic(capE, 18),
+		maxEgld: fromAtomic(maxE, 18),
+		minRoar: fromAtomic(minR, TOKEN.decimals),
+		capRoar: fromAtomic(capR, TOKEN.decimals),
+		maxRoar: fromAtomic(maxR, TOKEN.decimals),
+		freeEgld: fromAtomic(freeE, 18),
+		freeRoar: fromAtomic(freeR, TOKEN.decimals),
+		rakeEgld: fromAtomic(rakeE, 18),
+		rakeRoar: fromAtomic(rakeR, TOKEN.decimals),
+		claimEgld: fromAtomic(claimE, 18),
+		claimRoar: fromAtomic(claimR, TOKEN.decimals),
+		sc
+	};
+});
+
+export const prepareDiceTx = createServerFn({ method: "POST" }).validator((data) => {
+	const address = String(data.address ?? "").trim();
+	const sc = diceSc(data.sc);
+	const kind = String(data.kind ?? "");
+	if (!isErdAddress(address)) throw new Error("Invalid address");
+	if (!sc) throw new Error("Dice table is not live");
+	if (kind !== "bet" && kind !== "claim" && kind !== "resolve" && kind !== "start") throw new Error("Invalid dice action");
+	const token = data.token === "ROAR" ? "ROAR" : "EGLD";
+	const amount = Number(data.amount ?? 0);
+	const under = Math.floor(Number(data.under ?? 50));
+	if (kind === "bet") {
+		if (!(amount > 0) || !Number.isFinite(amount)) throw new Error("Invalid amount");
+		if (under < GAMES.minUnder || under > GAMES.maxUnder) throw new Error("under 2..96");
+	}
+	return { address, sc, kind, token, amount, under };
+}).handler(async ({ data }) => {
+	const { address, sc, kind, token, amount, under } = data;
+	const account = await mx(`/accounts/${address}?withGuardianInfo=true`);
+	if (kind === "claim") {
+		const addrHex = bech32ToHex(address);
+		const [egldAmt, roarAmt] = await Promise.all([
+			diceView(sc, "getClaimableEgld", [addrHex]),
+			diceView(sc, "getClaimableRoar", [addrHex])
+		]);
+		if (egldAmt <= 0n && roarAmt <= 0n) throw new Error("nothing to claim");
+		return withAccountGuard({
+			sender: address,
+			receiver: sc,
+			nonce: account?.nonce ?? 0,
+			value: "0",
+			data: encodeDiceClaim(),
+			gasLimit: CHAIN.diceClaimGasLimit,
+			gasPrice: CHAIN.gasPrice,
+			chainID: CHAIN.id
+		}, account);
+	}
+	if (kind === "resolve") {
+		return withAccountGuard({
+			sender: address,
+			receiver: sc,
+			nonce: account?.nonce ?? 0,
+			value: "0",
+			data: encodeResolveRound(),
+			gasLimit: CHAIN.diceResolveGasLimit,
+			gasPrice: CHAIN.gasPrice,
+			chainID: CHAIN.id
+		}, account);
+	}
+	if (kind === "start") {
+		return withAccountGuard({
+			sender: address,
+			receiver: sc,
+			nonce: account?.nonce ?? 0,
+			value: "0",
+			data: encodeStartRound(),
+			gasLimit: CHAIN.diceStartGasLimit,
+			gasPrice: CHAIN.gasPrice,
+			chainID: CHAIN.id
+		}, account);
+	}
+	const [paused, open, minE, maxE, minR, maxR] = await Promise.all([
+		diceView(sc, "isPaused"),
+		diceView(sc, "isRoundOpen"),
+		diceView(sc, "getMinBetEgld"),
+		diceView(sc, "getDynamicMaxBetEgld"),
+		diceView(sc, "getMinBetRoar"),
+		diceView(sc, "getDynamicMaxBetRoar")
+	]);
+	if (paused > 0n) throw new Error("table paused");
+	if (open === 0n) throw new Error("no open round");
+	if (token === "ROAR") {
+		const atomic = toAtomic(amount, TOKEN.decimals);
+		if (atomic < minR) throw new Error("below min");
+		if (atomic > maxR) throw new Error("above max");
+		const roar = await mx(`/accounts/${address}/tokens/${TOKEN.identifier}`);
+		if (atomic > BigInt(roar?.balance ?? "0")) throw new Error("Not enough ROAR");
+		return withAccountGuard({
+			sender: address,
+			receiver: sc,
+			nonce: account?.nonce ?? 0,
+			value: "0",
+			data: encodeEsdtPlaceBet(TOKEN.identifier, atomic, under),
+			gasLimit: CHAIN.diceBetGasLimit,
+			gasPrice: CHAIN.gasPrice,
+			chainID: CHAIN.id
+		}, account);
+	}
+	const atomic = toAtomic(amount, 18);
+	if (atomic < minE) throw new Error("below min");
+	if (atomic > maxE) throw new Error("above max");
+	if (atomic + gasWei(CHAIN.diceBetGasLimit) > BigInt(account?.balance ?? "0")) throw new Error("Not enough EGLD");
+	return withAccountGuard({
+		sender: address,
+		receiver: sc,
+		nonce: account?.nonce ?? 0,
+		value: atomic.toString(),
+		data: encodePlaceBet(under),
+		gasLimit: CHAIN.diceBetGasLimit,
+		gasPrice: CHAIN.gasPrice,
+		chainID: CHAIN.id
+	}, account);
+});
+
+export const prepareDiceDeployTx = createServerFn({ method: "POST" }).validator((data) => {
+	const address = String(data.address ?? "").trim();
+	if (!isErdAddress(address)) throw new Error("Invalid address");
+	const seedEgld = Number(data.seedEgld ?? 1);
+	const seedRoar = Number(data.seedRoar ?? 0);
+	if (!(seedEgld >= 1) || !Number.isFinite(seedEgld)) throw new Error("Seed at least 1 EGLD");
+	if (seedRoar < 0 || !Number.isFinite(seedRoar)) throw new Error("Invalid ROAR seed");
+	return { address, seedEgld, seedRoar };
+}).handler(async ({ data }) => {
+	const { address, seedEgld, seedRoar } = data;
+	const fs = await import("node:fs");
+	const path = await import("node:path");
+	const wasmPath = path.join(process.cwd(), "public/pridevault-casino.wasm");
+	if (!fs.existsSync(wasmPath)) throw new Error("Casino WASM missing");
+	const codeHex = fs.readFileSync(wasmPath).toString("hex");
+	const account = await mx(`/accounts/${address}?withGuardianInfo=true`);
+	const nonce = account?.nonce ?? 0;
+	const { Address, AddressComputer } = await import("@multiversx/sdk-core");
+	const predicted = new AddressComputer().computeContractAddress(Address.newFromBech32(address), BigInt(nonce)).toBech32();
+	const initArgs = encodeDiceInit({
+		treasuryHex: bech32ToHex(address),
+		roarToken: TOKEN.identifier,
+		minEgld: toAtomic(GAMES.minBetEgld, 18),
+		capEgld: toAtomic(GAMES.capBetEgld, 18),
+		minRoar: toAtomic(GAMES.minBetRoar, TOKEN.decimals),
+		capRoar: toAtomic(GAMES.capBetRoar, TOKEN.decimals),
+		roundBlocks: 6,
+		minBankEgld: toAtomic(0.5, 18),
+		minBankRoar: toAtomic(100, TOKEN.decimals)
+	});
+	const deploy = withAccountGuard({
+		sender: address,
+		receiver: address,
+		nonce,
+		value: "0",
+		data: encodeContractDeploy(codeHex, initArgs),
+		gasLimit: CHAIN.diceDeployGasLimit,
+		gasPrice: CHAIN.gasPrice,
+		chainID: CHAIN.id
+	}, account);
+	const fundEgld = withAccountGuard({
+		sender: address,
+		receiver: predicted,
+		nonce: nonce + 1,
+		value: toAtomic(seedEgld, 18).toString(),
+		data: encodeFundBankroll(),
+		gasLimit: CHAIN.diceFundGasLimit,
+		gasPrice: CHAIN.gasPrice,
+		chainID: CHAIN.id
+	}, account);
+	const txs = [deploy, fundEgld];
+	if (seedRoar > 0) {
+		txs.push(withAccountGuard({
+			sender: address,
+			receiver: predicted,
+			nonce: nonce + txs.length,
+			value: "0",
+			data: encodeEsdtFundBankroll(TOKEN.identifier, toAtomic(seedRoar, TOKEN.decimals)),
+			gasLimit: CHAIN.diceFundGasLimit,
+			gasPrice: CHAIN.gasPrice,
+			chainID: CHAIN.id
+		}, account));
+	}
+	txs.push(withAccountGuard({
+		sender: address,
+		receiver: predicted,
+		nonce: nonce + txs.length,
+		value: "0",
+		data: encodeStartRound(),
+		gasLimit: CHAIN.diceStartGasLimit,
+		gasPrice: CHAIN.gasPrice,
+		chainID: CHAIN.id
+	}, account));
+	return { sc: predicted, txs, seedEgld, seedRoar };
+});
+
+function diceSc(raw) {
+	const sc = String(raw || GAMES.roarDice || "").trim();
+	if (!isErdAddress(sc)) return "";
+	if (!sc.startsWith("erd1qqqq")) return "";
+	return sc;
+}
+
+async function diceView(sc, funcName, args = []) {
+	try {
+		const body = await (await fetch(`${GW}/vm-values/query`, {
+			method: "POST",
+			headers: {
+				accept: "application/json",
+				"content-type": "application/json",
+				"user-agent": "PrideVault/1.0 (Heart of ROAR)"
+			},
+			body: JSON.stringify({
+				scAddress: sc,
+				funcName,
+				args
+			}),
+			signal: AbortSignal.timeout(8e3)
+		})).json();
+		if (body.data?.data?.returnCode && body.data.data.returnCode !== "ok") return 0n;
+		const raw = body.data?.data?.returnData?.[0];
+		return b64Uint(raw);
+	} catch {
+		return 0n;
+	}
+}
+
+function b64Uint(b64) {
+	const buf = b64Buf(b64);
+	if (!buf.length) return 0n;
+	let n = 0n;
+	for (const b of buf) n = (n << 8n) + BigInt(b);
+	return n;
+}
 //#endregion

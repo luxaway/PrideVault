@@ -319,3 +319,64 @@ export function encodeBurnifyUnstakeBufu(
   }
   return parts.join("@");
 }
+
+export function encodePlaceBet(under: number): string {
+  return ["placeBet", toEvenHex(under)].join("@");
+}
+
+export function encodeDiceClaim(): string {
+  return "claim";
+}
+
+export function encodeResolveRound(): string {
+  return "resolveRound";
+}
+
+export function encodeEsdtPlaceBet(token: string, amount: bigint | string, under: number): string {
+  return encodeEsdtCall(token, amount, "placeBet", [toEvenHex(under)]);
+}
+
+export function encodeFundBankroll(): string {
+  return "fundBankroll";
+}
+
+export function encodeStartRound(): string {
+  return "startRound";
+}
+
+export function encodeEsdtFundBankroll(token: string, amount: bigint | string): string {
+  return encodeEsdtCall(token, amount, "fundBankroll");
+}
+
+/** Upgradeable + readable + payable + payable-by-SC. */
+export const DICE_CODE_METADATA = "0506";
+
+export function encodeContractDeploy(codeHex: string, args: string[]): string {
+  return [codeHex.replace(/^0x/i, ""), DICE_CODE_METADATA, ...args].join("@");
+}
+
+export function encodeDiceInit(args: {
+  treasuryHex: string;
+  roarToken: string;
+  minEgld: bigint;
+  capEgld: bigint;
+  minRoar: bigint;
+  capRoar: bigint;
+  roundBlocks: number;
+  minBankEgld: bigint;
+  minBankRoar: bigint;
+}): string[] {
+  return [
+    args.treasuryHex,
+    utf8ToHex(args.roarToken),
+    toEvenHex(args.minEgld),
+    toEvenHex(args.capEgld),
+    toEvenHex(args.minRoar),
+    toEvenHex(args.capRoar),
+    toEvenHex(args.roundBlocks),
+    toEvenHex(args.minBankEgld),
+    toEvenHex(args.minBankRoar),
+  ];
+}
+
+
