@@ -77,6 +77,7 @@ import {
 import { fromDenom, isErdAddress, isTokenId } from "./utils";
 import { accruePending, dailyFromPool } from "./vault";
 import type { HistoryItem } from "./store";
+import { DICE_WASM_HEX } from "./dice-wasm";
 
 export type HeartPnlLot = {
   qty: number;
@@ -5067,11 +5068,8 @@ export const prepareDiceDeployTx = createServerFn({ method: "POST" }).validator(
 	return { address, seedEgld, seedRoar };
 }).handler(async ({ data }) => {
 	const { address, seedEgld, seedRoar } = data;
-	const fs = await import("node:fs");
-	const path = await import("node:path");
-	const wasmPath = path.join(process.cwd(), "public/pridevault-casino.wasm");
-	if (!fs.existsSync(wasmPath)) throw new Error("Casino WASM missing");
-	const codeHex = fs.readFileSync(wasmPath).toString("hex");
+	const codeHex = DICE_WASM_HEX;
+	if (!codeHex.startsWith("0061736d") || codeHex.length < 1000) throw new Error("Casino WASM missing");
 	const account = await mx(`/accounts/${address}?withGuardianInfo=true`);
 	const nonce = account?.nonce ?? 0;
 	const { Address, AddressComputer } = await import("@multiversx/sdk-core");
