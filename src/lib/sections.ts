@@ -25,10 +25,10 @@ export function sectionFromHash(hash: string): AppSection {
   return "heart";
 }
 
-/** Fill roarDice + treasury after the SC is live. Treasury = PrideVault ops wallet. */
+/** Treasury = luxaway.elrond. roarDice stays empty until the SC is deployed. */
 export const GAMES = {
   roarDice: "",
-  treasury: "",
+  treasury: "erd1yqu7lartn9wgp65kauq98d0mpfnncaes3q3he4wwr8esp5e3ljkqd5a03k",
   rakeEgldBps: 400,
   rakeRoarBps: 200,
   houseEdgeBps: 500,
